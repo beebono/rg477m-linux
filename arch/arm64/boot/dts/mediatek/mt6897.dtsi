@@ -18,6 +18,7 @@
 #include <dt-bindings/phy/phy.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/power/mt6897-power.h>
+#include <dt-bindings/clock/mt6897-clk.h>
 
 / {
 	compatible = "mediatek,mt6897";
@@ -320,6 +321,88 @@
 			reg = <0x0 0x1e800000 0x0 0x1000>;
 			power-domains = <&scpsys MT6897_POWER_DOMAIN_MM_INFRA>;
 			#clock-cells = <1>;
+			status = "disabled";
+		};
+
+		/*
+		 * Display pipeline for mediatek-drm (DSI0 path).
+		 *
+		 * dispsys0_config and ovlsys0_config above are bound by mtk-mmsys
+		 * (routing; the clock gates are registered as its child, with the
+		 * provider still on these nodes). The OVLSYS part of the CRTC
+		 * (ovl0_2l, ovlsys0 routing, ovlsys0_mutex) is driven by the
+		 * mediatek-drm OVLSYS adaptor, which has no node of its own.
+		 * Interrupts are the vendor tree's.
+		 */
+		disp_mutex0: mutex@14001000 {
+			compatible = "mediatek,mt6897-disp-mutex";
+			reg = <0x0 0x14001000 0x0 0x1000>;
+			power-domains = <&scpsys MT6897_POWER_DOMAIN_DIS0_SHUTDOWN>;
+			clocks = <&dispsys0_config CLK_DISPSYS0_DISP_MUTEX0>;
+			status = "disabled";
+		};
+
+		dsi0: dsi@1400d000 {
+			compatible = "mediatek,mt6897-dsi";
+			reg = <0x0 0x1400d000 0x0 0x1000>;
+			interrupts = <GIC_SPI 368 IRQ_TYPE_LEVEL_HIGH 0>;
+			power-domains = <&scpsys MT6897_POWER_DOMAIN_DIS0_SHUTDOWN>;
+			clocks = <&dispsys0_config CLK_DISPSYS0_DISP_DSI0>,
+				 <&dispsys0_config CLK_DISPSYS0_DSI_CLK>,
+				 <&mipi_tx0>;
+			clock-names = "engine", "digital", "hs";
+			phys = <&mipi_tx0>;
+			phy-names = "dphy";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		ovlsys0_mutex: mutex@14401000 {
+			compatible = "mediatek,mt6897-ovlsys-mutex";
+			reg = <0x0 0x14401000 0x0 0x1000>;
+			power-domains = <&scpsys MT6897_POWER_DOMAIN_OVL0_SHUTDOWN>;
+			clocks = <&ovlsys0_config CLK_OVLSYS0_DISP_MUTEX0>;
+			status = "disabled";
+		};
+
+		/*
+		 * The first clock is the OVL engine gate. The others are what
+		 * the running pipeline (OVLSYS -> relays -> DISPSYS -> DSI0, and
+		 * its SMI path) needs; the OVLSYS adaptor holds them from bind
+		 * on so that they stay on when the boot framebuffer lets go.
+		 */
+		ovl0_2l: ovl@14402000 {
+			compatible = "mediatek,mt6897-disp-ovl";
+			reg = <0x0 0x14402000 0x0 0x1000>;
+			interrupts = <GIC_SPI 387 IRQ_TYPE_LEVEL_HIGH 0>;
+			power-domains = <&scpsys MT6897_POWER_DOMAIN_OVL0_SHUTDOWN>;
+			clocks = <&ovlsys0_config CLK_OVLSYS0_OVL0_2L>,
+				 <&topckgen CLK_TOP_MMINFRA_SEL>,
+				 <&topckgen CLK_TOP_DISP0_SEL>,
+				 <&topckgen CLK_TOP_OVL0_SEL>,
+				 <&mminfra_config CLK_MMINFRA_SMI>,
+				 <&ovlsys0_config CLK_OVLSYS0_CONFIG>,
+				 <&ovlsys0_config CLK_OVLSYS0_DISP_MUTEX0>,
+				 <&ovlsys0_config CLK_OVLSYS0_DISP_DLO_ASYNC3>,
+				 <&ovlsys0_config CLK_OVLSYS0_SMI_SUB_COMMON0>,
+				 <&dispsys0_config CLK_DISPSYS0_DISPSYS_CONFIG>,
+				 <&dispsys0_config CLK_DISPSYS0_DISP_MUTEX0>,
+				 <&dispsys0_config CLK_DISPSYS0_DISP_DLI_ASYNC0>,
+				 <&dispsys0_config CLK_DISPSYS0_SMI_SUB_COMM0>,
+				 <&dispsys0_config CLK_DISPSYS0_DISP_DSI0>,
+				 <&dispsys0_config CLK_DISPSYS0_DSI_CLK>,
+				 <&dispsys0_config CLK_DISPSYS0_26M_CLK>;
+			status = "disabled";
+		};
+
+		mipi_tx0: dsi-phy@11e50000 {
+			compatible = "mediatek,mt6897-mipi-tx";
+			reg = <0x0 0x11e50000 0x0 0x1000>;
+			clocks = <&clk26m>;
+			clock-output-names = "mipi_tx0_pll";
+			#clock-cells = <0>;
+			#phy-cells = <0>;
 			status = "disabled";
 		};
 

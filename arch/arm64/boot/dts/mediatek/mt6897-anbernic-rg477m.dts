@@ -1587,3 +1587,49 @@
 	pinctrl-0 = <&disp_pwm_pins_default>;
 	status = "okay";
 };
+
+/*
+ * Display: mediatek-drm on DSI0 (OVL0_2L in OVLSYS0 -> DISPSYS0 PQ bypass ->
+ * DSI0 -> Truly FT8201P). Until the first modeset the bootloader's pipeline
+ * keeps running and the console stays on simpledrm; mediatek-drm removes the
+ * boot framebuffer when it binds. The panel supplies (GPIO63/GPIO64, PMIC
+ * VFP) are deliberately not described: they must not be switched yet.
+ */
+&mipi_tx0 {
+	status = "okay";
+};
+
+&disp_mutex0 {
+	status = "okay";
+};
+
+&ovlsys0_mutex {
+	status = "okay";
+};
+
+&ovl0_2l {
+	status = "okay";
+};
+
+&dsi0 {
+	status = "okay";
+
+	panel@0 {
+		compatible = "truly,ft8201p";
+		reg = <0>;
+		reset-gpios = <&pio 41 GPIO_ACTIVE_LOW>;
+		backlight = <&backlight>;
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&dsi0_out>;
+			};
+		};
+	};
+
+	port {
+		dsi0_out: endpoint {
+			remote-endpoint = <&panel_in>;
+		};
+	};
+};
