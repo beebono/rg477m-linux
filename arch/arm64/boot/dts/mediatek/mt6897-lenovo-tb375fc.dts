@@ -910,7 +910,7 @@
 	 *   MTCMOS + ifr-bus 总线保护序列（数据全部反推自厂商 .ko）。
 	 */
 	status = "okay";
-	power-domains = <&scpsys 0>;
+	power-domains = <&scpsys 1>;
 	/* conninfra 的 emi_mng.c 靠它取 EMI 基址（本机 LK 没给 emi-addr）。 */
 	memory-region = <&consys_reserved>;
 	/*
@@ -935,7 +935,7 @@
 	 * 一定先 probe 完。挂上 power-domains 后，genpd 会在 wifi probe **之前**
 	 * 就把 conn MTCMOS 拉起来，杜绝"访问未上电域 ⇒ 总线停摆"。
 	 */
-	power-domains = <&scpsys 0>;
+	power-domains = <&scpsys 1>;
 };
 
 &bt {
@@ -945,5 +945,5 @@
 &connfem {
 	status = "okay";
 	/* 同理：connfem 也住在 0x18000000 那片，先确保 conn 域已上电。 */
-	power-domains = <&scpsys 0>;
+	power-domains = <&scpsys 1>;
 };
