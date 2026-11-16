@@ -342,6 +342,27 @@
 };
 
 /*
+ * Display clock gates used by the bootloader's pipeline (DSI0 path through
+ * dispsys0/ovlsys0, SMI/GCE on mminfra). Registration is read-free and
+ * write-free; the gates are only touched once a consumer enables them.
+ * The three power domains are registered on and always-on by scpsys.
+ */
+&dispsys0_config {
+	mediatek,hardware-voter = <&hwv>;
+	status = "okay";
+};
+
+&ovlsys0_config {
+	mediatek,hardware-voter = <&hwv>;
+	status = "okay";
+};
+
+&mminfra_config {
+	mediatek,hardware-voter = <&hwv>;
+	status = "okay";
+};
+
+/*
  * microSD slot (MSDC1). Pins, supplies and card detect are the stock tree's;
  * its raw drive-strength index 3 is 8 mA.
  */

@@ -17,6 +17,7 @@
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/phy/phy.h>
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/power/mt6897-power.h>
 
 / {
 	compatible = "mediatek,mt6897";
@@ -273,6 +274,53 @@
 			compatible = "mediatek,mt6897-scpsys", "syscon";
 			reg = <0x0 0x1c001000 0x0 0x1000>;
 			#power-domain-cells = <1>;
+		};
+
+		/*
+		 * Display / multimedia clock gates (clk-mt6897-mmsys.c). Vendor
+		 * compatibles and addresses; the vendor tree keeps the power
+		 * domain of each block on a separate "clk-disable-unused" node,
+		 * here it is on the provider itself. Boards enable the blocks
+		 * they use and add mediatek,hardware-voter.
+		 */
+		dispsys0_config: syscon@14000000 {
+			compatible = "mediatek,mt6897-dispsys0_config", "syscon";
+			reg = <0x0 0x14000000 0x0 0x1000>;
+			power-domains = <&scpsys MT6897_POWER_DOMAIN_DIS0_SHUTDOWN>;
+			#clock-cells = <1>;
+			status = "disabled";
+		};
+
+		dispsys1_config: syscon@14200000 {
+			compatible = "mediatek,mt6897-mmsys1", "syscon";
+			reg = <0x0 0x14200000 0x0 0x1000>;
+			power-domains = <&scpsys MT6897_POWER_DOMAIN_DIS1_SHUTDOWN>;
+			#clock-cells = <1>;
+			status = "disabled";
+		};
+
+		ovlsys0_config: syscon@14400000 {
+			compatible = "mediatek,mt6897-ovlsys0_config", "syscon";
+			reg = <0x0 0x14400000 0x0 0x1000>;
+			power-domains = <&scpsys MT6897_POWER_DOMAIN_OVL0_SHUTDOWN>;
+			#clock-cells = <1>;
+			status = "disabled";
+		};
+
+		ovlsys1_config: syscon@14600000 {
+			compatible = "mediatek,mt6897-ovlsys1_config", "syscon";
+			reg = <0x0 0x14600000 0x0 0x1000>;
+			power-domains = <&scpsys MT6897_POWER_DOMAIN_OVL1_SHUTDOWN>;
+			#clock-cells = <1>;
+			status = "disabled";
+		};
+
+		mminfra_config: syscon@1e800000 {
+			compatible = "mediatek,mt6897-mminfra_config", "syscon";
+			reg = <0x0 0x1e800000 0x0 0x1000>;
+			power-domains = <&scpsys MT6897_POWER_DOMAIN_MM_INFRA>;
+			#clock-cells = <1>;
+			status = "disabled";
 		};
 
 		/* Same register layout as MT6991 (vendor "pwm-version 3") */
