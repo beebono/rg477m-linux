@@ -21,6 +21,7 @@
 #include "mt8188-mmsys.h"
 #include "mt8192-mmsys.h"
 #include "mt6895-mmsys.h"
+#include "mt6897-mmsys.h"
 #include "mt8195-mmsys.h"
 #include "mt8365-mmsys.h"
 
@@ -154,6 +155,30 @@ static const struct mtk_mmsys_driver_data mt6895_mmsys1_driver_data = {
 	.is_vppsys = true,
 };
 
+/*
+ * MT6897: DISPSYS0 carries the DRM device; OVLSYS0 is a second routing/clock
+ * block driven by the mediatek-drm OVLSYS adaptor, so it must not spawn a
+ * second DRM device (is_vppsys).
+ */
+static const struct mtk_mmsys_driver_data mt6897_dispsys0_driver_data = {
+	.clk_driver = "clk-mt6897-dispsys0",
+	.routes = mmsys_mt6897_dispsys_routing_table,
+	.num_routes = ARRAY_SIZE(mmsys_mt6897_dispsys_routing_table),
+	.mux_shadow_reg = MT6897_DISPSYS_BYPASS_MUX_SHADOW,
+	.mux_shadow_val = MT6897_BYPASS_MUX_SHADOW_ALL,
+	.log_routes = true,
+};
+
+static const struct mtk_mmsys_driver_data mt6897_ovlsys0_driver_data = {
+	.clk_driver = "clk-mt6897-ovlsys0",
+	.routes = mmsys_mt6897_ovlsys_routing_table,
+	.num_routes = ARRAY_SIZE(mmsys_mt6897_ovlsys_routing_table),
+	.mux_shadow_reg = MT6897_OVLSYS_BYPASS_MUX_SHADOW,
+	.mux_shadow_val = MT6897_BYPASS_MUX_SHADOW_ALL,
+	.is_vppsys = true,
+	.log_routes = true,
+};
+
 static const struct mtk_mmsys_driver_data mt8365_mmsys_driver_data = {
 	.clk_driver = "clk-mt8365-mm",
 	.routes = mt8365_mmsys_routing_table,
@@ -200,10 +225,29 @@ void mtk_mmsys_ddp_connect(struct device *dev,
 	const struct mtk_mmsys_routes *routes = mmsys->data->routes;
 	int i;
 
-	for (i = 0; i < mmsys->data->num_routes; i++)
-		if (cur == routes[i].from_comp && next == routes[i].to_comp)
+	if (mmsys->data->mux_shadow_reg)
+		mtk_mmsys_update_bits(mmsys, mmsys->data->mux_shadow_reg,
+				      mmsys->data->mux_shadow_val,
+				      mmsys->data->mux_shadow_val, NULL);
+
+	for (i = 0; i < mmsys->data->num_routes; i++) {
+		if (cur != routes[i].from_comp || next != routes[i].to_comp)
+			continue;
+
+		/* BRINGUP(mt6897): log every routing write, old -> new */
+		if (mmsys->data->log_routes) {
+			u32 old = readl_relaxed(mmsys->regs + routes[i].addr);
+
 			mtk_mmsys_update_bits(mmsys, routes[i].addr, routes[i].mask,
 					      routes[i].val, NULL);
+			dev_info(dev, "bringup: route %u->%u reg 0x%03x mask 0x%08x: 0x%08x -> 0x%08x\n",
+				 cur, next, routes[i].addr, routes[i].mask, old,
+				 readl_relaxed(mmsys->regs + routes[i].addr));
+		} else {
+			mtk_mmsys_update_bits(mmsys, routes[i].addr, routes[i].mask,
+					      routes[i].val, NULL);
+		}
+	}
 
 	if (mmsys->data->vsync_len)
 		mtk_mmsys_update_bits(mmsys, MT8188_VDO1_MIXER_VSYNC_LEN, GENMASK(31, 0),
@@ -222,6 +266,9 @@ void mtk_mmsys_ddp_disconnect(struct device *dev,
 	for (i = 0; i < mmsys->data->num_routes; i++)
 		if (cur == routes[i].from_comp && next == routes[i].to_comp)
 			mtk_mmsys_update_bits(mmsys, routes[i].addr, routes[i].mask, 0, NULL);
+
+	if (mmsys->data->log_routes)
+		dev_info(dev, "bringup: route %u->%u disconnected\n", cur, next);
 }
 EXPORT_SYMBOL_GPL(mtk_mmsys_ddp_disconnect);
 
@@ -444,6 +491,12 @@ static int mtk_mmsys_probe(struct platform_device *pdev)
 		return PTR_ERR(clks);
 	mmsys->clks_pdev = clks;
 
+	/* BRINGUP(mt6897): probe touches no register; only the mapping above */
+	if (mmsys->data->log_routes)
+		dev_info(dev, "bringup: mmsys probed, clk child %s, %s\n",
+			 mmsys->data->clk_driver,
+			 mmsys->data->is_vppsys ? "no drm child" : "spawning mediatek-drm");
+
 	/*
 	 * The MT6895 display path OVL0/RDMA0 -> DSC_WRAP0 -> DSI0 physically
 	 * routes through the "PQ" post-processing chain (TDSHP0, COLOR0,
@@ -613,6 +666,8 @@ static const struct of_device_id of_match_mtk_mmsys[] = {
 	{ .compatible = "mediatek,mt8195-vppsys1", .data = &mt8195_vppsys1_driver_data },
 	{ .compatible = "mediatek,mt6895-mmsys0", .data = &mt6895_mmsys0_driver_data },
 	{ .compatible = "mediatek,mt6895-mmsys1", .data = &mt6895_mmsys1_driver_data },
+	{ .compatible = "mediatek,mt6897-dispsys0_config", .data = &mt6897_dispsys0_driver_data },
+	{ .compatible = "mediatek,mt6897-ovlsys0_config", .data = &mt6897_ovlsys0_driver_data },
 	{ .compatible = "mediatek,mt8365-mmsys", .data = &mt8365_mmsys_driver_data },
 	{ /* sentinel */ }
 };

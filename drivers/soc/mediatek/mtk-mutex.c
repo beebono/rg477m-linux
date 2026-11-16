@@ -356,6 +356,11 @@ struct mtk_mutex_data {
 	const u16 mutex_mod1_reg;
 	const u16 mutex_sof_reg;
 	const bool no_clk;
+	/*
+	 * The output engine (DSI) is also a MOD member, in addition to
+	 * selecting the SOF/EOF source (MT6985 generation, MT6897).
+	 */
+	const bool sof_comp_in_mod;
 };
 
 struct mtk_mutex_ctx {
@@ -903,6 +908,62 @@ static const struct mtk_mutex_data mt6895_mutex_driver_data = {
 	.mutex_sof_reg = MT8183_MUTEX0_SOF0,
 };
 
+/*
+ * MT6897 (MT6985 generation) has one mutex block per display subsystem:
+ * DISPSYS0 at 0x14001000 and OVLSYS0 at 0x14401000, with different MOD bit
+ * layouts but the same register layout (MOD0 0x30, MOD1 0x34, SOF 0x2c) and
+ * SOF/EOF encoding (EOF at bit 6). Bit numbers from downstream
+ * mtk_drm_ddp.c (MT6897_MUTEX_MOD0_*). Only the modules the mainline path
+ * uses are listed.
+ */
+#define MT6897_MUTEX_MOD0_DISP_DLI_ASYNC0	9
+#define MT6897_MUTEX_MOD0_DISP_DSI0		20
+
+#define MT6897_MUTEX_MOD0_OVLSYS_OVL0_2L	0
+#define MT6897_MUTEX_MOD0_OVLSYS_DLO_ASYNC3	15
+
+#define MT6897_MUTEX_SOF_DSI0			1
+#define MT6897_MUTEX_EOF_DSI0			(MT6897_MUTEX_SOF_DSI0 << 6)
+
+static const u8 mt6897_disp_mutex_mod[DDP_COMPONENT_ID_MAX] = {
+	[DDP_COMPONENT_DLI_ASYNC0] = MT6897_MUTEX_MOD0_DISP_DLI_ASYNC0,
+	[DDP_COMPONENT_DSI0] = MT6897_MUTEX_MOD0_DISP_DSI0,
+};
+
+static const u8 mt6897_ovlsys_mutex_mod[DDP_COMPONENT_ID_MAX] = {
+	[DDP_COMPONENT_OVL_2L0] = MT6897_MUTEX_MOD0_OVLSYS_OVL0_2L,
+	[DDP_COMPONENT_OVLSYS_DLO_ASYNC3] = MT6897_MUTEX_MOD0_OVLSYS_DLO_ASYNC3,
+};
+
+/* Both mutex blocks take their SOF and EOF from DSI0 (value 0x41) */
+static const u16 mt6897_mutex_sof[DDP_MUTEX_SOF_MAX] = {
+	[MUTEX_SOF_SINGLE_MODE] = MUTEX_SOF_SINGLE_MODE,
+	[MUTEX_SOF_DSI0] = MT6897_MUTEX_SOF_DSI0 | MT6897_MUTEX_EOF_DSI0,
+};
+
+static const struct mtk_mutex_data mt6897_disp_mutex_driver_data = {
+	.mutex_mod = mt6897_disp_mutex_mod,
+	.mutex_sof = mt6897_mutex_sof,
+	.mutex_mod_reg = MT8183_MUTEX0_MOD0,
+	.mutex_mod1_reg = MT8183_MUTEX0_MOD1,
+	.mutex_sof_reg = MT8183_MUTEX0_SOF0,
+	.sof_comp_in_mod = true,
+};
+
+static const struct mtk_mutex_data mt6897_ovlsys_mutex_driver_data = {
+	.mutex_mod = mt6897_ovlsys_mutex_mod,
+	.mutex_sof = mt6897_mutex_sof,
+	.mutex_mod_reg = MT8183_MUTEX0_MOD0,
+	.mutex_mod1_reg = MT8183_MUTEX0_MOD1,
+	.mutex_sof_reg = MT8183_MUTEX0_SOF0,
+};
+
+static bool mtk_mutex_is_mt6897(struct mtk_mutex_ctx *mtx)
+{
+	return mtx->data == &mt6897_disp_mutex_driver_data ||
+	       mtx->data == &mt6897_ovlsys_mutex_driver_data;
+}
+
 static const struct mtk_mutex_data mt8365_mutex_driver_data = {
 	.mutex_mod = mt8365_mutex_mod,
 	.mutex_sof = mt8183_mutex_sof,
@@ -1033,6 +1094,14 @@ void mtk_mutex_add_comp(struct mtk_mutex *mutex,
 	writel_relaxed(mtx->data->mutex_sof[sof_id],
 		       mtx->regs +
 		       DISP_REG_MUTEX_SOF(mtx->data->mutex_sof_reg, mutex->id));
+
+	if (mtx->data->sof_comp_in_mod && mtx->data->mutex_mod[id]) {
+		offset = DISP_REG_MUTEX_MOD(mtx, mtx->data->mutex_mod[id], mutex->id);
+		mod_id = mtx->data->mutex_mod[id] % 32;
+		reg = readl_relaxed(mtx->regs + offset);
+		reg |= BIT(mod_id);
+		writel_relaxed(reg, mtx->regs + offset);
+	}
 }
 EXPORT_SYMBOL_GPL(mtk_mutex_add_comp);
 
@@ -1060,6 +1129,14 @@ void mtk_mutex_remove_comp(struct mtk_mutex *mutex,
 			       mtx->regs +
 			       DISP_REG_MUTEX_SOF(mtx->data->mutex_sof_reg,
 						  mutex->id));
+		if (mtx->data->sof_comp_in_mod && mtx->data->mutex_mod[id]) {
+			offset = DISP_REG_MUTEX_MOD(mtx, mtx->data->mutex_mod[id],
+						    mutex->id);
+			mod_id = mtx->data->mutex_mod[id] % 32;
+			reg = readl_relaxed(mtx->regs + offset);
+			reg &= ~BIT(mod_id);
+			writel_relaxed(reg, mtx->regs + offset);
+		}
 		break;
 	default:
 		offset = DISP_REG_MUTEX_MOD(mtx, mtx->data->mutex_mod[id], mutex->id);
@@ -1080,6 +1157,15 @@ void mtk_mutex_enable(struct mtk_mutex *mutex)
 	WARN_ON(&mtx->mutex[mutex->id] != mutex);
 
 	writel(1, mtx->regs + DISP_REG_MUTEX_EN(mutex->id));
+
+	/* BRINGUP(mt6897): show what the mutex was armed with */
+	if (mtk_mutex_is_mt6897(mtx))
+		dev_info(mtx->dev, "bringup: mutex%d enabled: MOD0 0x%08x MOD1 0x%08x SOF 0x%08x EN 0x%x\n",
+			 mutex->id,
+			 readl(mtx->regs + DISP_REG_MUTEX_MOD(mtx, 0, mutex->id)),
+			 readl(mtx->regs + DISP_REG_MUTEX_MOD(mtx, 32, mutex->id)),
+			 readl(mtx->regs + DISP_REG_MUTEX_SOF(mtx->data->mutex_sof_reg, mutex->id)),
+			 readl(mtx->regs + DISP_REG_MUTEX_EN(mutex->id)));
 }
 EXPORT_SYMBOL_GPL(mtk_mutex_enable);
 
@@ -1111,6 +1197,9 @@ void mtk_mutex_disable(struct mtk_mutex *mutex)
 	WARN_ON(&mtx->mutex[mutex->id] != mutex);
 
 	writel(0, mtx->regs + DISP_REG_MUTEX_EN(mutex->id));
+
+	if (mtk_mutex_is_mt6897(mtx))
+		dev_info(mtx->dev, "bringup: mutex%d disabled\n", mutex->id);
 }
 EXPORT_SYMBOL_GPL(mtk_mutex_disable);
 
@@ -1181,6 +1270,36 @@ int mtk_mutex_write_mod(struct mtk_mutex *mutex,
 }
 EXPORT_SYMBOL_GPL(mtk_mutex_write_mod);
 
+/**
+ * mtk_mutex_update_mod_raw() - set or clear raw MOD bits of a mutex
+ * @mutex: the mutex
+ * @reg: 0 for MOD0, 1 for MOD1
+ * @bits: bit mask in that register
+ * @set: true to set, false to clear
+ *
+ * For modules that have no component id, e.g. the bootloader-configured PQ
+ * engines that the MT6897 bring-up fallback keeps in the path.
+ */
+void mtk_mutex_update_mod_raw(struct mtk_mutex *mutex, unsigned int reg,
+			      u32 bits, bool set)
+{
+	struct mtk_mutex_ctx *mtx = container_of(mutex, struct mtk_mutex_ctx,
+						 mutex[mutex->id]);
+	u32 offset = (reg ? mtx->data->mutex_mod1_reg : mtx->data->mutex_mod_reg) +
+		     0x20 * mutex->id;
+	u32 val;
+
+	WARN_ON(&mtx->mutex[mutex->id] != mutex);
+
+	val = readl_relaxed(mtx->regs + offset);
+	if (set)
+		val |= bits;
+	else
+		val &= ~bits;
+	writel_relaxed(val, mtx->regs + offset);
+}
+EXPORT_SYMBOL_GPL(mtk_mutex_update_mod_raw);
+
 int mtk_mutex_write_sof(struct mtk_mutex *mutex,
 			enum mtk_mutex_sof_index idx)
 {
@@ -1213,6 +1332,8 @@ static int mtk_mutex_probe(struct platform_device *pdev)
 	if (!mtx)
 		return -ENOMEM;
 
+	mtx->dev = dev;
+
 	for (i = 0; i < MTK_MUTEX_MAX_HANDLES; i++)
 		mtx->mutex[i].id = i;
 
@@ -1238,6 +1359,10 @@ static int mtk_mutex_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, mtx);
 
+	if (mtk_mutex_is_mt6897(mtx))
+		dev_info(dev, "bringup: mutex block probed at %pa (no register access)\n",
+			 &mtx->addr);
+
 	return 0;
 }
 
@@ -1255,6 +1380,8 @@ static const struct of_device_id mutex_driver_dt_match[] = {
 	{ .compatible = "mediatek,mt8192-disp-mutex", .data = &mt8192_mutex_driver_data },
 	{ .compatible = "mediatek,mt8195-disp-mutex", .data = &mt8195_mutex_driver_data },
 	{ .compatible = "mediatek,mt6895-disp-mutex", .data = &mt6895_mutex_driver_data },
+	{ .compatible = "mediatek,mt6897-disp-mutex", .data = &mt6897_disp_mutex_driver_data },
+	{ .compatible = "mediatek,mt6897-ovlsys-mutex", .data = &mt6897_ovlsys_mutex_driver_data },
 	{ .compatible = "mediatek,mt8195-vpp-mutex",  .data = &mt8195_vpp_mutex_driver_data },
 	{ .compatible = "mediatek,mt8365-disp-mutex", .data = &mt8365_mutex_driver_data },
 	{ /* sentinel */ },

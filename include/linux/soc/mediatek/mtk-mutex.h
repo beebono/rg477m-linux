@@ -84,6 +84,8 @@ void mtk_mutex_release(struct mtk_mutex *mutex);
 int mtk_mutex_write_mod(struct mtk_mutex *mutex,
 			enum mtk_mutex_mod_index idx,
 			bool clear);
+void mtk_mutex_update_mod_raw(struct mtk_mutex *mutex, unsigned int reg,
+			      u32 bits, bool set);
 int mtk_mutex_write_sof(struct mtk_mutex *mutex,
 			enum mtk_mutex_sof_index idx);
 

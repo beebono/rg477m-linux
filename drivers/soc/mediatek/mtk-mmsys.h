@@ -125,6 +125,11 @@ struct mtk_mmsys_routes {
  *             Please notice that this value has to be set to 1 (minimum) if
  *             ETHDR is bypassed, otherwise MIXER could wait too long and causing
  *             underflow.
+ * @mux_shadow_reg: Offset of a "bypass mux shadow" register that is ORed with
+ *                  @mux_shadow_val before routing changes, so that crossbar
+ *                  writes take effect immediately (MT6985 generation).
+ * @mux_shadow_val: Bits to set in @mux_shadow_reg.
+ * @log_routes: Log every routing register write at info level (bring-up).
  *
  * Each MMSYS (multi-media system) may have different settings, they may use
  * different clock sources, mux settings, reset control ...etc., and these
@@ -139,6 +144,9 @@ struct mtk_mmsys_driver_data {
 	const u32 num_resets;
 	const bool is_vppsys;
 	const u8 vsync_len;
+	const u32 mux_shadow_reg;
+	const u32 mux_shadow_val;
+	const bool log_routes;
 };
 
 /*
