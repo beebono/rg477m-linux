@@ -175,15 +175,15 @@ static const struct mtk_gate perao_clks[] = {
 	GATE_PERAO0(CLK_PERAOP_PWM_HCLK, "peraop_pwm_hclk",
 			"peri_faxi_ck"/* parent */, 4),
 	GATE_PERAO0(CLK_PERAOP_PWM_BCLK, "peraop_pwm_bclk",
-			"pwm_ck"/* parent */, 5),
+			"peraop_pwm_bsel"/* parent */, 5),
 	GATE_PERAO0(CLK_PERAOP_PWM_FBCLK1, "peraop_pwm_fbclk1",
-			"pwm_ck"/* parent */, 6),
+			"peraop_pwm_fb1_sel"/* parent */, 6),
 	GATE_PERAO0(CLK_PERAOP_PWM_FBCLK2, "peraop_pwm_fbclk2",
-			"pwm_ck"/* parent */, 7),
+			"peraop_pwm_fb2_sel"/* parent */, 7),
 	GATE_PERAO0(CLK_PERAOP_PWM_FBCLK3, "peraop_pwm_fbclk3",
-			"pwm_ck"/* parent */, 8),
+			"peraop_pwm_fb3_sel"/* parent */, 8),
 	GATE_PERAO0(CLK_PERAOP_PWM_FBCLK4, "peraop_pwm_fbclk4",
-			"pwm_ck"/* parent */, 9),
+			"peraop_pwm_fb4_sel"/* parent */, 9),
 	GATE_HWV_PERAO0(CLK_PERAOP_DISP_PWM0, "peraop_disp_pwm0",
 			"disp_pwm_ck"/* parent */, 10),
 	GATE_HWV_PERAO0(CLK_PERAOP_DISP_PWM1, "peraop_disp_pwm1",
@@ -230,9 +230,32 @@ static const struct mtk_gate perao_clks[] = {
 			"aud_intbus_ck"/* parent */, 2),
 };
 
+/*
+ * PWM clock source selectors (PERI_PWM_CLK_SRC_CTRL, 0x20): one two-bit field
+ * for the block clock and one per channel. They reset to 32 kHz; the vendor
+ * PWM driver ("mediatek,pwm-topclk-ctl-reg") picks 26 MHz for its users.
+ */
+static const char * const perao_pwm_src_parents[] = {
+	"clk32k",
+	"clk26m",
+	"univpll_d4_d8",
+	"pwm_ck"
+};
+
+static const struct mtk_composite perao_composites[] = {
+	MUX(CLK_PERAOP_PWM_BSEL, "peraop_pwm_bsel", perao_pwm_src_parents, 0x20, 4, 2),
+	MUX(CLK_PERAOP_PWM_FB1_SEL, "peraop_pwm_fb1_sel", perao_pwm_src_parents, 0x20, 12, 2),
+	MUX(CLK_PERAOP_PWM_FB2_SEL, "peraop_pwm_fb2_sel", perao_pwm_src_parents, 0x20, 10, 2),
+	MUX(CLK_PERAOP_PWM_FB3_SEL, "peraop_pwm_fb3_sel", perao_pwm_src_parents, 0x20, 8, 2),
+	MUX(CLK_PERAOP_PWM_FB4_SEL, "peraop_pwm_fb4_sel", perao_pwm_src_parents, 0x20, 6, 2),
+};
+
 static const struct mtk_clk_desc perao_mcd = {
 	.clks = perao_clks,
 	.num_clks = ARRAY_SIZE(perao_clks),
+	.composite_clks = perao_composites,
+	.num_composite_clks = ARRAY_SIZE(perao_composites),
+	.shared_io = true,
 };
 
 static const struct mtk_gate_regs pextpcfg_ao_cg_regs = {
