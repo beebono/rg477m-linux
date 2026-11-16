@@ -1112,6 +1112,37 @@ config COMMON_CLK_MT6895_AFE
 	  gates ("mediatek,mt6895-afe" provider node), consumed by the
 	  MT6895 ASoC AFE driver.
 
+config COMMON_CLK_MT6897
+	bool "Clock driver for MediaTek MT6897"
+	depends on ARM64 || COMPILE_TEST
+	select COMMON_CLK_MEDIATEK
+	help
+	  This driver supports MediaTek MT6897 basic clocks: apmixedsys and
+	  the CPU/CCI/PTP/MFG PLL control blocks, topckgen and vlp_cksys.
+
+config COMMON_CLK_MT6897_BUS
+	tristate "Clock driver for MediaTek MT6897 infracfg_ao"
+	depends on COMMON_CLK_MT6897
+	default COMMON_CLK_MT6897
+	help
+	  This driver supports MediaTek MT6897 infracfg_ao clock gates.
+
+config COMMON_CLK_MT6897_PERI
+	tristate "Clock driver for MediaTek MT6897 peripheral clocks"
+	depends on COMMON_CLK_MT6897
+	default COMMON_CLK_MT6897
+	help
+	  This driver supports MediaTek MT6897 pericfg_ao, pextpcfg_ao,
+	  ufscfg_ao/ufscfg_pdn and imp_iic_wrap clock gates.
+
+config COMMON_CLK_MT6897_VLP
+	tristate "Clock driver for MediaTek MT6897 SCP clocks"
+	depends on COMMON_CLK_MT6897
+	default COMMON_CLK_MT6897
+	help
+	  This driver supports MediaTek MT6897 scp, scp_iic and scp_fast_iic
+	  clock gates.
+
 config COMMON_CLK_MT8365
 	tristate "Clock driver for MediaTek MT8365"
 	depends on ARCH_MEDIATEK || COMPILE_TEST
