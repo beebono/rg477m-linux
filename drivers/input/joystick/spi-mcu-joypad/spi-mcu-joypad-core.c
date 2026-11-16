@@ -193,6 +193,8 @@ static void mcu_joypad_poll(struct work_struct *work)
 		goto reschedule;
 	}
 
+	mcu_joypad_fix_axes(mjp, axes);
+
 	if (mjp->input_opened)
 		mcu_joypad_input_report(mjp, axes);
 
@@ -236,6 +238,8 @@ static int mcu_joypad_probe(struct spi_device *spi)
 	}
 
 	mjp->poll_interval_ms = MCU_DEFAULT_POLL_MS;
+	mjp->swap_sticks = device_property_read_bool(&spi->dev, "swap-sticks");
+
 	if (!device_property_read_u32(&spi->dev, "poll-interval-ms", &val))
 		mjp->poll_interval_ms = val;
 

@@ -115,6 +115,8 @@ int mcu_joypad_calibrate(struct mcu_joypad *mjp)
 			continue;
 		}
 
+		mcu_joypad_fix_axes(mjp, axes);
+
 		for (int a = 0; a < MCU_NUM_AXES; a++)
 			sum[a] += axes[a];
 		good_frames++;

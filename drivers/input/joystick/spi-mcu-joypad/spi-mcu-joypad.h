@@ -113,6 +113,8 @@ struct mcu_joypad {
 	s32			trig_l_zero;
 	s32			trig_r_zero;
 	bool			calibrated;
+	/* Board wires the two sticks the other way round ("swap-sticks"). */
+	bool			swap_sticks;
 
 	/* Radial deadzone per stick pair and linear deadzone for triggers. */
 	u32			deadzone_left;
@@ -139,5 +141,14 @@ int mcu_joypad_calibrate(struct mcu_joypad *mjp);
 int mcu_joypad_leds_register(struct mcu_joypad *mjp);
 void mcu_joypad_leds_unregister(struct mcu_joypad *mjp);
 void mcu_joypad_leds_suspend(struct mcu_joypad *mjp);
+
+/* Apply board-level axis fixups to a freshly parsed frame. */
+static inline void mcu_joypad_fix_axes(const struct mcu_joypad *mjp, u16 *axes)
+{
+	if (mjp->swap_sticks) {
+		swap(axes[0], axes[2]);
+		swap(axes[1], axes[3]);
+	}
+}
 
 #endif /* _SPI_MCU_JOYPAD_H */
