@@ -764,6 +764,17 @@ static bool mt6897_bp_regmaps_ok(struct device *dev, struct scp *scp,
 	return true;
 }
 
+/* SPM PWR_CON offsets of the voter-controlled domains, indexed by vote bit. */
+static const u16 mt6897_hwv_pwr_con[] = {
+	0xEAC,	/* mm_infra */
+	0xE4C,	/* vde0 */
+	0xE50,	/* vde1 */
+	0xE9C,	/* dis0 */
+	0xEA0,	/* dis1 */
+	0xEA4,	/* ovl0 */
+	0xEA8,	/* ovl1 */
+};
+
 /*
  * Read-only check of the state the bootloader left a domain in.
  * Never writes a register.
@@ -778,16 +789,27 @@ static bool mt6897_pd_hw_is_on(struct device *dev, struct scp *scp,
 		return false;
 
 	if (d->caps & MTK_SCPD_HWV_OPS) {
-		if (!scp->hwv_regmap)
+		/*
+		 * The voter registers only say who has voted. The bootloader
+		 * powers the display domains through SPM directly, without a
+		 * vote, so a lit panel shows no vote at all. The power state is
+		 * in the domain's SPM PWR_CON ack bits, which is also what the
+		 * vendor's power-domain checker reads.
+		 */
+		if (d->hwv_shift >= ARRAY_SIZE(mt6897_hwv_pwr_con))
 			return false;
+		val = readl(scp->base + mt6897_hwv_pwr_con[d->hwv_shift]);
+		done = en = set_sta = 0;
 		bit = BIT(d->hwv_shift);
-		if (regmap_read(scp->hwv_regmap, d->hwv_done_ofs, &done) ||
-		    regmap_read(scp->hwv_regmap, d->hwv_en_ofs, &en) ||
-		    regmap_read(scp->hwv_regmap, d->hwv_set_sta_ofs, &set_sta))
-			return false;
-		dev_dbg(dev, "%s: hwv done=%#x en=%#x set_sta=%#x\n",
-			d->name, done, en, set_sta);
-		return (done & bit) && (en & bit) && !(set_sta & bit);
+		if (scp->hwv_regmap) {
+			regmap_read(scp->hwv_regmap, d->hwv_done_ofs, &done);
+			regmap_read(scp->hwv_regmap, d->hwv_en_ofs, &en);
+			regmap_read(scp->hwv_regmap, d->hwv_set_sta_ofs, &set_sta);
+		}
+		dev_info(dev, "%s: PWR_CON(%#x)=%#x, vote done=%d en=%d set_sta=%d\n",
+			 d->name, mt6897_hwv_pwr_con[d->hwv_shift], val,
+			 !!(done & bit), !!(en & bit), !!(set_sta & bit));
+		return (val & MT6897_PWR_ACK_BITS) == MT6897_PWR_ACK_BITS;
 	}
 
 	val = readl(scp->base + d->ctl_offs);
