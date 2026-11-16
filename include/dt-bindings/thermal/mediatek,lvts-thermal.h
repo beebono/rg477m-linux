@@ -109,4 +109,45 @@
 #define MT8196_AP_BOT2                  6
 #define MT8196_AP_BOT3                  7
 
+/*
+ * MT6897: one LVTS node per thermal domain (mcu, ap, apu, gpu). The comment
+ * gives the vendor sensor name (TSx_y) and the sensor id the vendor device
+ * tree uses (vendor id = vendor sensor index + 1).
+ */
+#define MT6897_MCU_MEDIUM_CPU4_0	0	/* TS1_0, vendor 1  */
+#define MT6897_MCU_MEDIUM_CPU4_1	1	/* TS1_1, vendor 2  */
+#define MT6897_MCU_MEDIUM_CPU5_0	2	/* TS1_2, vendor 3  */
+#define MT6897_MCU_MEDIUM_CPU5_1	3	/* TS1_3, vendor 4  */
+#define MT6897_MCU_LITTLE_CPU2		4	/* TS2_0, vendor 5  */
+#define MT6897_MCU_LITTLE_CPU3		5	/* TS2_1, vendor 6  */
+#define MT6897_MCU_MEDIUM_CPU6_0	6	/* TS2_2, vendor 7  */
+#define MT6897_MCU_MEDIUM_CPU6_1	7	/* TS2_3, vendor 8  */
+#define MT6897_MCU_DSU0			8	/* TS3_0, vendor 9  */
+#define MT6897_MCU_LITTLE_CPU0		9	/* TS3_1, vendor 10 */
+#define MT6897_MCU_LITTLE_CPU1		10	/* TS3_2, vendor 11 */
+#define MT6897_MCU_DSU1			11	/* TS3_3, vendor 12 */
+#define MT6897_MCU_BIG_CPU7_0		12	/* TS4_0, vendor 13 */
+#define MT6897_MCU_BIG_CPU7_1		13	/* TS4_1, vendor 14 */
+#define MT6897_MCU_DSU2			14	/* TS4_2, vendor 15 */
+#define MT6897_MCU_DSU3			15	/* TS4_3, vendor 16 */
+
+#define MT6897_AP_SOC_TOP0		0	/* TS5_0, vendor 17 */
+#define MT6897_AP_SOC_TOP1		1	/* TS5_1, vendor 18 */
+#define MT6897_AP_SOC_TOP2		2	/* TS5_2, vendor 19 */
+#define MT6897_AP_SOC_TOP3		3	/* TS5_3, vendor 20 */
+#define MT6897_AP_SOC_BOT0		4	/* TS6_0, vendor 21 */
+#define MT6897_AP_SOC_BOT1		5	/* TS6_1, vendor 22 */
+#define MT6897_AP_SOC_BOT2		6	/* TS6_2, vendor 23 */
+#define MT6897_AP_SOC_BOT3		7	/* TS6_3, vendor 24 */
+#define MT6897_AP_MD0			8	/* TS7_0, vendor 25 */
+#define MT6897_AP_MD1			9	/* TS7_1, vendor 26 */
+#define MT6897_AP_MD2			10	/* TS7_2, vendor 27 */
+#define MT6897_AP_MD3			11	/* TS7_3, vendor 28 */
+
+#define MT6897_APU0			0	/* TS8_0, vendor 29 */
+#define MT6897_APU1			1	/* TS8_1, vendor 30 */
+
+#define MT6897_GPU0			0	/* TS9_0, vendor 31 */
+#define MT6897_GPU1			1	/* TS9_1, vendor 32 */
+
 #endif /* __MEDIATEK_LVTS_DT_H */

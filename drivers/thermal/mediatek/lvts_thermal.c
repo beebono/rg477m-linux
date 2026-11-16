@@ -17,6 +17,7 @@
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/thermal.h>
+#include <linux/unaligned.h>
 #include <dt-bindings/thermal/mediatek,lvts-thermal.h>
 
 #include "../thermal_hwmon.h"
@@ -127,6 +128,28 @@ struct lvts_ctrl_data {
 	u8 valid_sensor_mask;
 	int offset;
 	enum lvts_msr_mode mode;
+	/* Controller may be calibrated at high temperature (recip. formula) */
+	bool ht_cal;
+};
+
+/*
+ * Reciprocal temperature formula (the MediaTek vendor driver's "v2"
+ * raw_to_temp with "v6" coefficients), used by MT6897. Per sensor:
+ *
+ *   a    = (t_slope_golden - const_offset)
+ *          + const_offset * count_r / count_r_golden
+ *   temp = (a << 14) / raw + golden_temp * 500 - a       [milli-Celsius]
+ *
+ * count_r is the sensor's efuse value and golden_temp the efuse golden
+ * temperature in 0.5 C units. A controller is calibrated either at normal
+ * (NT) or, when it supports it and the efuse says so, at high temperature
+ * (HT); this selects both the coefficient set and the golden temperature.
+ */
+struct lvts_recip_coeff {
+	int t_slope_golden;
+	int count_r_golden;
+	int const_offset;
+	int def_golden_temp;
 };
 
 #define VALID_SENSOR_MAP(s0, s1, s2, s3) \
@@ -160,6 +183,24 @@ struct lvts_data {
 	int gt_calib_bit_offset;
 	unsigned int def_calibration;
 	u16 msr_offset;
+	/*
+	 * The controllers are fully set up by the bootloader (the vendor
+	 * kernel driver never programs them): do not reset or reprogram
+	 * them, do not touch thresholds or interrupt enables, only read the
+	 * measurement registers.
+	 */
+	bool hw_preinit;
+	/* Reciprocal formula, see struct lvts_recip_coeff */
+	const struct lvts_recip_coeff *coeff_nt;
+	const struct lvts_recip_coeff *coeff_ht;
+	int gt_ht_calib_bit_offset;
+	int cali_mode_bit;
+	/*
+	 * Per 32-bit efuse word, the bits holding calibration values: if all
+	 * of them are zero the part is uncalibrated and defaults are used.
+	 */
+	const u32 *cal_blank_mask;
+	int num_cal_blank_mask;
 };
 
 struct lvts_sensor {
@@ -170,6 +211,9 @@ struct lvts_sensor {
 	int dt_id;
 	int low_thresh;
 	int high_thresh;
+	/* Reciprocal formula only: temp = (coeff_a << 14) / raw + temp_offset */
+	int coeff_a;
+	int temp_offset;
 };
 
 struct lvts_ctrl {
@@ -184,6 +228,7 @@ struct lvts_ctrl {
 };
 
 struct lvts_domain {
+	const struct lvts_data *lvts_data;
 	struct lvts_ctrl *lvts_ctrl;
 	struct reset_control *reset;
 	struct clk *clk;
@@ -338,6 +383,16 @@ static u32 lvts_temp_to_raw_mt8196(int temperature, int temp_factor)
 	return div_s64((s64)temp_factor << 14, raw_temp);
 }
 
+static int lvts_raw_to_temp_recip(const struct lvts_sensor *lvts_sensor, u32 raw)
+{
+	s64 temp;
+
+	temp = div_s64((s64)lvts_sensor->coeff_a << 14, raw);
+	temp += lvts_sensor->temp_offset;
+
+	return clamp_t(s64, temp, INT_MIN, INT_MAX);
+}
+
 static int lvts_get_temp(struct thermal_zone_device *tz, int *temp)
 {
 	struct lvts_sensor *lvts_sensor = thermal_zone_device_priv(tz);
@@ -347,6 +402,21 @@ static int lvts_get_temp(struct thermal_zone_device *tz, int *temp)
 	void __iomem *msr = lvts_sensor->msr;
 	u32 value;
 	int rc;
+
+	if (lvts_data->hw_preinit) {
+		/*
+		 * Same as the vendor driver: one read of the measurement
+		 * register, bits 15-0 are the raw value and 0 means "no
+		 * measurement yet". The vendor code does not use bit 16.
+		 */
+		value = readl(msr) & 0xFFFF;
+		if (!value)
+			return -EAGAIN;
+
+		*temp = lvts_raw_to_temp_recip(lvts_sensor, value);
+
+		return 0;
+	}
 
 	/*
 	 * Measurement registers:
@@ -628,6 +698,14 @@ static irqreturn_t lvts_irq_handler(int irq, void *data)
 static const struct thermal_zone_device_ops lvts_ops = {
 	.get_temp = lvts_get_temp,
 	.set_trips = lvts_set_trips,
+};
+
+/*
+ * Bootloader-initialised controllers: no .set_trips, so the driver never
+ * writes thresholds or interrupt enables; the zones must be polled.
+ */
+static const struct thermal_zone_device_ops lvts_preinit_ops = {
+	.get_temp = lvts_get_temp,
 };
 
 static int lvts_sensor_init(struct device *dev, struct lvts_ctrl *lvts_ctrl,
@@ -939,6 +1017,109 @@ static int lvts_golden_temp_init(struct device *dev, u8 *calib,
 	return 0;
 }
 
+/*
+ * Reciprocal formula platforms (MT6897): the vendor driver falls back to
+ * default calibration when the efuse is blank. Be at least as tolerant:
+ * missing or unreadable cells, or a blob whose size does not match the
+ * expected layout, are treated as a blank efuse instead of failing probe.
+ * Only -EPROBE_DEFER is propagated.
+ */
+static int lvts_recip_calibration_read(struct device *dev,
+				       struct lvts_domain *lvts_td,
+				       const struct lvts_data *lvts_data)
+{
+	size_t expected = lvts_data->num_cal_blank_mask * sizeof(u32);
+	int ret;
+
+	ret = lvts_calibration_read(dev, lvts_td, lvts_data);
+	if (ret == -EPROBE_DEFER)
+		return ret;
+
+	if (ret || lvts_td->calib_len != expected) {
+		dev_warn(dev, "calibration efuse unusable (err %d, %zu/%zu bytes), using default calibration\n",
+			 ret, lvts_td->calib_len, expected);
+		lvts_td->calib_len = 0;
+	}
+
+	return 0;
+}
+
+static u32 lvts_efuse_word(const u8 *calib, size_t calib_len, unsigned int idx)
+{
+	if ((idx + 1) * sizeof(u32) > calib_len)
+		return 0;
+
+	return get_unaligned_le32(calib + idx * sizeof(u32));
+}
+
+static void lvts_recip_calibration_init(struct device *dev,
+					struct lvts_ctrl *lvts_ctrl,
+					const struct lvts_data *lvts_data,
+					const u8 *calib, size_t calib_len)
+{
+	u32 word0 = lvts_efuse_word(calib, calib_len, 0);
+	bool cali_ht = word0 & BIT(lvts_data->cali_mode_bit);
+	int gt = (word0 >> lvts_data->gt_calib_bit_offset) & 0xff;
+	int gt_ht = (word0 >> lvts_data->gt_ht_calib_bit_offset) & 0xff;
+	bool blank = true;
+	int i, j, k;
+
+	/* Vendor check: every calibration field is zero => uncalibrated */
+	for (i = 0; i < lvts_data->num_cal_blank_mask; i++)
+		if (lvts_efuse_word(calib, calib_len, i) & lvts_data->cal_blank_mask[i])
+			blank = false;
+
+	if (blank)
+		dev_warn(dev, "efuse not calibrated, using default calibration\n");
+	else
+		dev_info(dev, "golden temp=%d, golden temp ht=%d, cali mode=%s\n",
+			 gt, gt_ht, cali_ht ? "ht" : "nt");
+
+	for (i = 0; i < lvts_data->num_lvts_ctrl; i++) {
+		const struct lvts_ctrl_data *ctrl_data = &lvts_data->lvts_ctrl[i];
+		bool ht = ctrl_data->ht_cal && cali_ht;
+		const struct lvts_recip_coeff *co = ht ? lvts_data->coeff_ht :
+							 lvts_data->coeff_nt;
+		int golden;
+
+		if (blank)
+			golden = co->def_golden_temp;
+		else
+			golden = ht ? gt_ht : gt;
+
+		lvts_for_each_valid_sensor(j, ctrl_data) {
+			struct lvts_sensor *lvts_sensor = &lvts_ctrl[i].sensors[j];
+			u32 count_r = 0;
+
+			if (blank) {
+				count_r = lvts_data->def_calibration;
+			} else {
+				for (k = 0; k < lvts_data->num_cal_offsets; k++) {
+					u8 offset = ctrl_data->lvts_sensor[j].cal_offsets[k];
+
+					if (offset < calib_len)
+						count_r |= calib[offset] << (8 * k);
+				}
+			}
+
+			if (!count_r)
+				dev_warn(dev, "controller %d sensor %d has no calibration value\n",
+					 i, j);
+
+			lvts_ctrl[i].calibration[j] = count_r;
+
+			lvts_sensor->coeff_a = co->t_slope_golden - co->const_offset +
+				(int)div_s64((s64)co->const_offset * count_r,
+					     co->count_r_golden);
+			lvts_sensor->temp_offset = golden * 500 - lvts_sensor->coeff_a;
+
+			dev_dbg(dev, "controller %d sensor %d: count_r=%u a=%d offset=%d\n",
+				i, j, count_r, lvts_sensor->coeff_a,
+				lvts_sensor->temp_offset);
+		}
+	}
+}
+
 static int lvts_ctrl_init(struct device *dev, struct lvts_domain *lvts_td,
 					const struct lvts_data *lvts_data)
 {
@@ -949,13 +1130,19 @@ static int lvts_ctrl_init(struct device *dev, struct lvts_domain *lvts_td,
 	/*
 	 * Create the calibration bytes stream from efuse data
 	 */
-	ret = lvts_calibration_read(dev, lvts_td, lvts_data);
-	if (ret)
-		return ret;
+	if (lvts_data->coeff_nt) {
+		ret = lvts_recip_calibration_read(dev, lvts_td, lvts_data);
+		if (ret)
+			return ret;
+	} else {
+		ret = lvts_calibration_read(dev, lvts_td, lvts_data);
+		if (ret)
+			return ret;
 
-	ret = lvts_golden_temp_init(dev, lvts_td->calib, lvts_data);
-	if (ret)
-		return ret;
+		ret = lvts_golden_temp_init(dev, lvts_td->calib, lvts_data);
+		if (ret)
+			return ret;
+	}
 
 	lvts_ctrl = devm_kzalloc(dev, size, GFP_KERNEL);
 	if (!lvts_ctrl)
@@ -971,12 +1158,14 @@ static int lvts_ctrl_init(struct device *dev, struct lvts_domain *lvts_td,
 		if (ret)
 			return ret;
 
-		ret = lvts_calibration_init(dev, &lvts_ctrl[i],
-					    &lvts_data->lvts_ctrl[i],
-					    lvts_td->calib,
-					    lvts_td->calib_len);
-		if (ret)
-			return ret;
+		if (!lvts_data->coeff_nt) {
+			ret = lvts_calibration_init(dev, &lvts_ctrl[i],
+						    &lvts_data->lvts_ctrl[i],
+						    lvts_td->calib,
+						    lvts_td->calib_len);
+			if (ret)
+				return ret;
+		}
 
 		/*
 		 * The mode the ctrl will use to read the temperature
@@ -987,6 +1176,10 @@ static int lvts_ctrl_init(struct device *dev, struct lvts_domain *lvts_td,
 		lvts_ctrl[i].low_thresh = INT_MIN;
 		lvts_ctrl[i].high_thresh = INT_MIN;
 	}
+
+	if (lvts_data->coeff_nt)
+		lvts_recip_calibration_init(dev, lvts_ctrl, lvts_data,
+					    lvts_td->calib, lvts_td->calib_len);
 
 	/*
 	 * We no longer need the efuse bytes stream, let's free it
@@ -1303,7 +1496,8 @@ static int lvts_ctrl_start(struct device *dev, struct lvts_ctrl *lvts_ctrl)
 		int dt_id = lvts_sensors[i].dt_id;
 
 		tz = devm_thermal_of_zone_register(dev, dt_id, &lvts_sensors[i],
-						   &lvts_ops);
+						   lvts_ctrl->lvts_data->hw_preinit ?
+						   &lvts_preinit_ops : &lvts_ops);
 		if (IS_ERR(tz)) {
 			/*
 			 * This thermal zone is not described in the
@@ -1336,6 +1530,10 @@ static int lvts_ctrl_start(struct device *dev, struct lvts_ctrl *lvts_ctrl)
 		 */
 		sensor_map |= sensor_bitmap[i];
 	}
+
+	/* Sensing points were enabled by the bootloader, leave them alone */
+	if (lvts_ctrl->lvts_data->hw_preinit)
+		return 0;
 
 	/*
 	 * The initialization of the thermal zones give us
@@ -1370,6 +1568,38 @@ static int lvts_ctrl_start(struct device *dev, struct lvts_ctrl *lvts_ctrl)
 	return 0;
 }
 
+/*
+ * Read-only report of the state the bootloader left a controller in, so the
+ * hardware protection setup can be checked from the kernel log.
+ */
+static void lvts_preinit_report(struct device *dev, struct lvts_ctrl *lvts_ctrl,
+				int index)
+{
+	void __iomem *base = lvts_ctrl->base;
+	u32 clken = readl(LVTS_CLKEN(base));
+	u32 monctl0 = readl(LVTS_MONCTL0(base));
+	u32 monint = readl(LVTS_MONINT(base));
+	u32 protctl = readl(LVTS_PROTCTL(base));
+	u32 prottc = readl(LVTS_PROTTC(base));
+	u32 sel = (protctl >> 18) & 0x3;
+	u32 raw = prottc & 0xFFFF;
+
+	dev_info(dev, "controller %d: CLKEN=%#x MONCTL0=%#x MONINT=%#x PROTCTL=%#x PROTTC=%#x\n",
+		 index, clken, monctl0, monint, protctl, prottc);
+
+	if (!(clken & BIT(0)) ||
+	    (monctl0 & lvts_ctrl->valid_sensor_mask) != lvts_ctrl->valid_sensor_mask)
+		dev_warn(dev, "controller %d not running, its sensors will not report\n",
+			 index);
+
+	/* PROTCTL[17:16] == 2: stage 3 compares PROTTC with sensor PROTCTL[19:18] */
+	if (((protctl >> 16) & 0x3) == 2 && raw &&
+	    (lvts_ctrl->valid_sensor_mask & BIT(sel)))
+		dev_info(dev, "controller %d: stage 3 (hw reboot) threshold %d mC on sensor %u%s\n",
+			 index, lvts_raw_to_temp_recip(&lvts_ctrl->sensors[sel], raw),
+			 sel, (protctl & 0xFFFF) ? " (masked by PROTCTL offset)" : "");
+}
+
 static int lvts_domain_init(struct device *dev, struct lvts_domain *lvts_td,
 					const struct lvts_data *lvts_data)
 {
@@ -1379,6 +1609,26 @@ static int lvts_domain_init(struct device *dev, struct lvts_domain *lvts_td,
 	ret = lvts_ctrl_init(dev, lvts_td, lvts_data);
 	if (ret)
 		return ret;
+
+	if (lvts_data->hw_preinit) {
+		/*
+		 * No reset and no register writes: the bootloader set up the
+		 * controllers, calibration registers and the hardware
+		 * thermal protection, and the vendor kernel never touches
+		 * them either. Only register the thermal zones.
+		 */
+		for (i = 0; i < lvts_td->num_lvts_ctrl; i++) {
+			lvts_ctrl = &lvts_td->lvts_ctrl[i];
+
+			lvts_preinit_report(dev, lvts_ctrl, i);
+
+			ret = lvts_ctrl_start(dev, lvts_ctrl);
+			if (ret)
+				return ret;
+		}
+
+		return lvts_debugfs_init(dev, lvts_td);
+	}
 
 	ret = lvts_domain_reset(dev, lvts_td->reset);
 	if (ret) {
@@ -1458,7 +1708,13 @@ static int lvts_probe(struct platform_device *pdev)
 	if (!lvts_data)
 		return -ENODEV;
 
-	lvts_td->clk = devm_clk_get_enabled(dev, NULL);
+	lvts_td->lvts_data = lvts_data;
+
+	/* The vendor driver uses no clock for bootloader-initialised LVTS */
+	if (lvts_data->hw_preinit)
+		lvts_td->clk = devm_clk_get_optional_enabled(dev, NULL);
+	else
+		lvts_td->clk = devm_clk_get_enabled(dev, NULL);
 	if (IS_ERR(lvts_td->clk))
 		return dev_err_probe(dev, PTR_ERR(lvts_td->clk), "Failed to retrieve clock\n");
 
@@ -1469,6 +1725,22 @@ static int lvts_probe(struct platform_device *pdev)
 	lvts_td->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(lvts_td->base))
 		return dev_err_probe(dev, PTR_ERR(lvts_td->base), "Failed to map io resource\n");
+
+	if (lvts_data->hw_preinit) {
+		/*
+		 * Never reset (that would drop the bootloader's hardware
+		 * protection setup) and do not take the interrupt: it only
+		 * signals the hardware reboot stage, whose RGU path does not
+		 * depend on software, and the zones are polled.
+		 */
+		ret = lvts_domain_init(dev, lvts_td, lvts_data);
+		if (ret)
+			return dev_err_probe(dev, ret, "Failed to initialize the lvts domain\n");
+
+		platform_set_drvdata(pdev, lvts_td);
+
+		return 0;
+	}
 
 	lvts_td->reset = devm_reset_control_get_by_index(dev, 0);
 	if (IS_ERR(lvts_td->reset))
@@ -1504,6 +1776,10 @@ static void lvts_remove(struct platform_device *pdev)
 	int i;
 
 	lvts_td = platform_get_drvdata(pdev);
+
+	/* Leave bootloader-initialised controllers (and protection) running */
+	if (lvts_td->lvts_data->hw_preinit)
+		return;
 
 	for (i = 0; i < lvts_td->num_lvts_ctrl; i++)
 		lvts_ctrl_set_enable(&lvts_td->lvts_ctrl[i], false);
@@ -1561,6 +1837,10 @@ static int lvts_suspend(struct device *dev)
 
 	lvts_td = dev_get_drvdata(dev);
 
+	/* As in the vendor driver, nothing to do for bootloader-set LVTS */
+	if (lvts_td->lvts_data->hw_preinit)
+		return 0;
+
 	for (i = 0; i < lvts_td->num_lvts_ctrl; i++) {
 		lvts_ctrl_monitor_enable(dev, &lvts_td->lvts_ctrl[i], false);
 		usleep_range(100, 200);
@@ -1578,6 +1858,9 @@ static int lvts_resume(struct device *dev)
 	int i, ret;
 
 	lvts_td = dev_get_drvdata(dev);
+
+	if (lvts_td->lvts_data->hw_preinit)
+		return 0;
 
 	ret = clk_prepare_enable(lvts_td->clk);
 	if (ret)
@@ -2005,6 +2288,185 @@ static const struct lvts_ctrl_data mt8196_lvts_ap_data_ctrl[] = {
 	}
 };
 
+/*
+ * MT6897 efuse: 29 32-bit words (cells e_data1..4 concatenated in this
+ * order). Word 0: [31] HT calibration mode, [15:8] HT golden temp, [7:0]
+ * golden temp. Words 1-14, 17, 18: two 16-bit count_r per word, high half
+ * first (same byte pattern as MT8196). Words 19-25, 27, 28: per controller
+ * count_rc in [23:0], only used to tell a blank efuse.
+ */
+static const struct lvts_ctrl_data mt6897_lvts_mcu_data_ctrl[] = {
+	{
+		.lvts_sensor = {
+			{ .dt_id = MT6897_MCU_MEDIUM_CPU4_0,
+			  .cal_offsets = { 0x06, 0x07 } },
+			{ .dt_id = MT6897_MCU_MEDIUM_CPU4_1,
+			  .cal_offsets = { 0x04, 0x05 } },
+			{ .dt_id = MT6897_MCU_MEDIUM_CPU5_0,
+			  .cal_offsets = { 0x0A, 0x0B } },
+			{ .dt_id = MT6897_MCU_MEDIUM_CPU5_1,
+			  .cal_offsets = { 0x08, 0x09 } }
+		},
+		VALID_SENSOR_MAP(1, 1, 1, 1),
+		.offset = 0x0,
+		.mode = LVTS_MSR_FILTERED_MODE,
+		.ht_cal = true,
+	},
+	{
+		.lvts_sensor = {
+			{ .dt_id = MT6897_MCU_LITTLE_CPU2,
+			  .cal_offsets = { 0x0E, 0x0F } },
+			{ .dt_id = MT6897_MCU_LITTLE_CPU3,
+			  .cal_offsets = { 0x0C, 0x0D } },
+			{ .dt_id = MT6897_MCU_MEDIUM_CPU6_0,
+			  .cal_offsets = { 0x12, 0x13 } },
+			{ .dt_id = MT6897_MCU_MEDIUM_CPU6_1,
+			  .cal_offsets = { 0x10, 0x11 } }
+		},
+		VALID_SENSOR_MAP(1, 1, 1, 1),
+		.offset = 0x100,
+		.mode = LVTS_MSR_FILTERED_MODE,
+		.ht_cal = true,
+	},
+	{
+		.lvts_sensor = {
+			{ .dt_id = MT6897_MCU_DSU0,
+			  .cal_offsets = { 0x16, 0x17 } },
+			{ .dt_id = MT6897_MCU_LITTLE_CPU0,
+			  .cal_offsets = { 0x14, 0x15 } },
+			{ .dt_id = MT6897_MCU_LITTLE_CPU1,
+			  .cal_offsets = { 0x1A, 0x1B } },
+			{ .dt_id = MT6897_MCU_DSU1,
+			  .cal_offsets = { 0x18, 0x19 } }
+		},
+		VALID_SENSOR_MAP(1, 1, 1, 1),
+		.offset = 0x200,
+		.mode = LVTS_MSR_FILTERED_MODE,
+		.ht_cal = true,
+	},
+	{
+		.lvts_sensor = {
+			{ .dt_id = MT6897_MCU_BIG_CPU7_0,
+			  .cal_offsets = { 0x1E, 0x1F } },
+			{ .dt_id = MT6897_MCU_BIG_CPU7_1,
+			  .cal_offsets = { 0x1C, 0x1D } },
+			{ .dt_id = MT6897_MCU_DSU2,
+			  .cal_offsets = { 0x22, 0x23 } },
+			{ .dt_id = MT6897_MCU_DSU3,
+			  .cal_offsets = { 0x20, 0x21 } }
+		},
+		VALID_SENSOR_MAP(1, 1, 1, 1),
+		.offset = 0x300,
+		.mode = LVTS_MSR_FILTERED_MODE,
+		.ht_cal = true,
+	}
+};
+
+static const struct lvts_ctrl_data mt6897_lvts_ap_data_ctrl[] = {
+	{
+		.lvts_sensor = {
+			{ .dt_id = MT6897_AP_SOC_TOP0,
+			  .cal_offsets = { 0x26, 0x27 } },
+			{ .dt_id = MT6897_AP_SOC_TOP1,
+			  .cal_offsets = { 0x24, 0x25 } },
+			{ .dt_id = MT6897_AP_SOC_TOP2,
+			  .cal_offsets = { 0x2A, 0x2B } },
+			{ .dt_id = MT6897_AP_SOC_TOP3,
+			  .cal_offsets = { 0x28, 0x29 } }
+		},
+		VALID_SENSOR_MAP(1, 1, 1, 1),
+		.offset = 0x0,
+		.mode = LVTS_MSR_FILTERED_MODE,
+	},
+	{
+		.lvts_sensor = {
+			{ .dt_id = MT6897_AP_SOC_BOT0,
+			  .cal_offsets = { 0x2E, 0x2F } },
+			{ .dt_id = MT6897_AP_SOC_BOT1,
+			  .cal_offsets = { 0x2C, 0x2D } },
+			{ .dt_id = MT6897_AP_SOC_BOT2,
+			  .cal_offsets = { 0x32, 0x33 } },
+			{ .dt_id = MT6897_AP_SOC_BOT3,
+			  .cal_offsets = { 0x30, 0x31 } }
+		},
+		VALID_SENSOR_MAP(1, 1, 1, 1),
+		.offset = 0x100,
+		.mode = LVTS_MSR_FILTERED_MODE,
+	},
+	{
+		.lvts_sensor = {
+			{ .dt_id = MT6897_AP_MD0,
+			  .cal_offsets = { 0x36, 0x37 } },
+			{ .dt_id = MT6897_AP_MD1,
+			  .cal_offsets = { 0x34, 0x35 } },
+			{ .dt_id = MT6897_AP_MD2,
+			  .cal_offsets = { 0x3A, 0x3B } },
+			{ .dt_id = MT6897_AP_MD3,
+			  .cal_offsets = { 0x38, 0x39 } }
+		},
+		VALID_SENSOR_MAP(1, 1, 1, 1),
+		.offset = 0x200,
+		.mode = LVTS_MSR_FILTERED_MODE,
+	}
+};
+
+static const struct lvts_ctrl_data mt6897_lvts_apu_data_ctrl[] = {
+	{
+		.lvts_sensor = {
+			{ .dt_id = MT6897_APU0,
+			  .cal_offsets = { 0x46, 0x47 } },
+			{ .dt_id = MT6897_APU1,
+			  .cal_offsets = { 0x44, 0x45 } }
+		},
+		VALID_SENSOR_MAP(1, 1, 0, 0),
+		.offset = 0x0,
+		.mode = LVTS_MSR_FILTERED_MODE,
+	}
+};
+
+static const struct lvts_ctrl_data mt6897_lvts_gpu_data_ctrl[] = {
+	{
+		.lvts_sensor = {
+			{ .dt_id = MT6897_GPU0,
+			  .cal_offsets = { 0x4A, 0x4B } },
+			{ .dt_id = MT6897_GPU1,
+			  .cal_offsets = { 0x48, 0x49 } }
+		},
+		VALID_SENSOR_MAP(1, 1, 0, 0),
+		.offset = 0x0,
+		.mode = LVTS_MSR_FILTERED_MODE,
+	}
+};
+
+static const u32 mt6897_cal_blank_mask[] = {
+	0x0000FFFF,					/* golden temps */
+	0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,	/* count_r */
+	0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+	0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+	0xFFFFFFFF, 0xFFFFFFFF,
+	0, 0,						/* unused */
+	0xFFFFFFFF, 0xFFFFFFFF,				/* count_r */
+	0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,	/* count_rc */
+	0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
+	0,						/* unused */
+	0x00FFFFFF, 0x00FFFFFF,
+};
+
+/* Vendor COF_A_*_V6 and default_golden_temp(_ht) */
+static const struct lvts_recip_coeff mt6897_coeff_nt = {
+	.t_slope_golden = 224280,
+	.count_r_golden = 14698,
+	.const_offset = 280000,
+	.def_golden_temp = 60,
+};
+
+static const struct lvts_recip_coeff mt6897_coeff_ht = {
+	.t_slope_golden = 279280,
+	.count_r_golden = 18302,
+	.const_offset = 170000,
+	.def_golden_temp = 170,
+};
+
 static const struct lvts_platform_ops lvts_platform_ops_mt7988 = {
 	.lvts_raw_to_temp = lvts_raw_to_temp_mt7988,
 	.lvts_temp_to_raw = lvts_temp_to_raw_mt7988,
@@ -2171,7 +2633,36 @@ static const struct lvts_data mt8196_lvts_ap_data = {
 	.ops = &lvts_platform_ops_mt8196,
 };
 
+#define MT6897_LVTS_DATA(_ctrl)						\
+	{								\
+		.lvts_ctrl	= _ctrl,				\
+		.num_lvts_ctrl	= ARRAY_SIZE(_ctrl),			\
+		.hw_preinit	= true,					\
+		.coeff_nt	= &mt6897_coeff_nt,			\
+		.coeff_ht	= &mt6897_coeff_ht,			\
+		.gt_calib_bit_offset = 0,				\
+		.gt_ht_calib_bit_offset = 8,				\
+		.cali_mode_bit	= 31,					\
+		.def_calibration = 14698,				\
+		.num_cal_offsets = 2,					\
+		.cal_blank_mask	= mt6897_cal_blank_mask,		\
+		.num_cal_blank_mask = ARRAY_SIZE(mt6897_cal_blank_mask), \
+	}
+
+static const struct lvts_data mt6897_lvts_mcu_data =
+	MT6897_LVTS_DATA(mt6897_lvts_mcu_data_ctrl);
+static const struct lvts_data mt6897_lvts_ap_data =
+	MT6897_LVTS_DATA(mt6897_lvts_ap_data_ctrl);
+static const struct lvts_data mt6897_lvts_apu_data =
+	MT6897_LVTS_DATA(mt6897_lvts_apu_data_ctrl);
+static const struct lvts_data mt6897_lvts_gpu_data =
+	MT6897_LVTS_DATA(mt6897_lvts_gpu_data_ctrl);
+
 static const struct of_device_id lvts_of_match[] = {
+	{ .compatible = "mediatek,mt6897-lvts-mcu", .data = &mt6897_lvts_mcu_data },
+	{ .compatible = "mediatek,mt6897-lvts-ap", .data = &mt6897_lvts_ap_data },
+	{ .compatible = "mediatek,mt6897-lvts-apu", .data = &mt6897_lvts_apu_data },
+	{ .compatible = "mediatek,mt6897-lvts-gpu", .data = &mt6897_lvts_gpu_data },
 	{ .compatible = "mediatek,mt7987-lvts-ap", .data = &mt7987_lvts_ap_data },
 	{ .compatible = "mediatek,mt7988-lvts-ap", .data = &mt7988_lvts_ap_data },
 	{ .compatible = "mediatek,mt8186-lvts", .data = &mt8186_lvts_data },
