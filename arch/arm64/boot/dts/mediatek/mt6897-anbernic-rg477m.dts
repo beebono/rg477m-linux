@@ -766,6 +766,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				medium_core4_1_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				medium_core4_1_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -774,6 +784,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&medium_core4_1_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&medium_core4_1_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -789,6 +807,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				medium_core4_2_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				medium_core4_2_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -797,6 +825,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&medium_core4_2_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&medium_core4_2_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -812,6 +848,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				medium_core5_1_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				medium_core5_1_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -820,6 +866,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&medium_core5_1_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&medium_core5_1_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -835,6 +889,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				medium_core5_2_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				medium_core5_2_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -843,6 +907,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&medium_core5_2_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&medium_core5_2_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -858,6 +930,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				little_core2_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				little_core2_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -866,6 +948,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&little_core2_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&little_core2_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -881,6 +971,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				little_core3_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				little_core3_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -889,6 +989,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&little_core3_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&little_core3_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -904,6 +1012,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				medium_core6_1_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				medium_core6_1_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -912,6 +1030,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&medium_core6_1_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&medium_core6_1_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -927,6 +1053,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				medium_core6_2_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				medium_core6_2_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -935,6 +1071,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&medium_core6_2_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&medium_core6_2_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -950,6 +1094,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				dsu1_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				dsu1_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -958,6 +1112,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&dsu1_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&dsu1_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -973,6 +1135,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				little_core0_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				little_core0_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -981,6 +1153,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&little_core0_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&little_core0_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -996,6 +1176,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				little_core1_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				little_core1_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -1004,6 +1194,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&little_core1_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&little_core1_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -1019,6 +1217,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				dsu2_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				dsu2_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -1027,6 +1235,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&dsu2_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&dsu2_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -1042,6 +1258,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				big_core7_1_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				big_core7_1_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -1050,6 +1276,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&big_core7_1_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&big_core7_1_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -1065,6 +1299,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				big_core7_2_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				big_core7_2_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -1073,6 +1317,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&big_core7_2_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&big_core7_2_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -1088,6 +1340,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				dsu3_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				dsu3_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -1096,6 +1358,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&dsu3_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&dsu3_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -1111,6 +1381,16 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+				dsu4_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				dsu4_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
 			};
 
 			cooling-maps {
@@ -1119,6 +1399,14 @@
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&dsu4_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&dsu4_fan_high>;
+					cooling-device = <&fan 2 2>;
 				};
 			};
 		};
@@ -1181,5 +1469,54 @@
 	clock-names = "audio", "adsp_ao", "isp", "ipe", "vde", "ven",
 		      "cam", "dpe", "ccu", "ccu_ahb", "mdp", "mdp1",
 		      "disp", "disp1", "ovl", "ovl1", "mm_infra", "mmup";
+	status = "okay";
+};
+
+/*
+ * Cooling fan. PWM channel 0 on GPIO115 (already muxed by the bootloader),
+ * supply switch on GPIO4. The vendor driver programs the high time as
+ * (256 - level), i.e. the fan runs faster the longer the line is low, so the
+ * levels below are inverted: 255 = stopped, 96 = vendor "cool" (160),
+ * 1 = vendor "max" (255). Thresholds follow the vendor policy: 70 and 85 degC.
+ */
+/ {
+	fan_vcc: regulator-fan-vcc {
+		compatible = "regulator-fixed";
+		regulator-name = "fan-vcc";
+		gpio = <&pio 4 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	fan: pwm-fan {
+		compatible = "pwm-fan";
+		pwms = <&pwm 0 40000>;
+		fan-supply = <&fan_vcc>;
+		cooling-levels = <255 96 1>;
+		#cooling-cells = <2>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&fan_pins_default>;
+	};
+};
+
+&pio {
+	fan_pins_default: fan-default-pins {
+		pins-pwm {
+			pinmux = <0x7305>;
+		};
+	};
+};
+
+&pwm {
+	clocks = <&pericfg CLK_PERAOP_PWM_HCLK>,
+		 <&pericfg CLK_PERAOP_PWM_BCLK>,
+		 <&pericfg CLK_PERAOP_PWM_FBCLK1>,
+		 <&pericfg CLK_PERAOP_PWM_FBCLK2>,
+		 <&pericfg CLK_PERAOP_PWM_FBCLK3>,
+		 <&pericfg CLK_PERAOP_PWM_FBCLK4>;
+	clock-names = "top", "main", "pwm1", "pwm2", "pwm3", "pwm4";
+	/* The source selectors reset to 32 kHz; the fan needs 25 kHz PWM. */
+	assigned-clocks = <&pericfg CLK_PERAOP_PWM_BSEL>,
+			  <&pericfg CLK_PERAOP_PWM_FB1_SEL>;
+	assigned-clock-parents = <&clk26m>, <&clk26m>;
 	status = "okay";
 };

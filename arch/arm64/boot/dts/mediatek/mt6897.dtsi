@@ -275,6 +275,15 @@
 			#power-domain-cells = <1>;
 		};
 
+		/* Same register layout as MT6991 (vendor "pwm-version 3") */
+		pwm: pwm@11008000 {
+			compatible = "mediatek,mt6897-pwm", "mediatek,mt6991-pwm";
+			reg = <0x0 0x11008000 0x0 0x1000>;
+			interrupts = <GIC_SPI 256 IRQ_TYPE_LEVEL_HIGH 0>;
+			#pwm-cells = <2>;
+			status = "disabled";
+		};
+
 		disp_pwm0: pwm@1100e000 {
 			compatible = "mediatek,mt6897-disp-pwm";
 			reg = <0x0 0x1100e000 0x0 0x1000>;
