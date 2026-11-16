@@ -18,6 +18,7 @@
 
 /dts-v1/;
 #include "mt6897.dtsi"
+#include <dt-bindings/clock/mt6897-clk.h>
 
 / {
 	model = "Anbernic RG477M";
@@ -31,7 +32,7 @@
 	 * still reset and falls back to the other slot.
 	 */
 	chosen {
-		bootargs = "console=tty0 ignore_loglevel printk.devkmsg=on clk_ignore_unused pd_ignore_unused panic=5 watchdog.open_timeout=45";
+		bootargs = "bootconfig console=tty0 ignore_loglevel printk.devkmsg=on clk_ignore_unused pd_ignore_unused panic=5 watchdog.open_timeout=45";
 	};
 
 	reserved-memory {
@@ -123,19 +124,18 @@
 };
 
 /*
- * PMIC bus. The interrupt line is a pinctrl EINT and there is no pinctrl
- * driver yet, so it is dropped; the bus driver then runs without interrupts.
- * Only VUSB is described, with the vendor tree's limits and always-on, so
- * nothing changes any rail's state or voltage.
+ * PMIC bus. The PMIC interrupt line is EINT 248 of the pin controller (the
+ * dtsi already says so). Only VUSB is described, with the vendor tree's limits
+ * and always-on, so nothing changes any rail's state or voltage. The power
+ * and volume-down ("home") keys on the MT6363 are polled by the keys driver.
  */
 &spmi {
-	/delete-property/ interrupts-extended;
-	/delete-property/ interrupt-names;
 	status = "okay";
 
 	mt6368: pmic@5 {
 		compatible = "mediatek,mt6368";
 		reg = <5 0>;
+		interrupts = <5>;
 		interrupt-controller;
 		#interrupt-cells = <2>;
 
@@ -150,12 +150,37 @@
 				regulator-enable-ramp-delay = <680>;
 				regulator-always-on;
 			};
+
+			/*
+			 * SD card supplies. The stock tree lists the LDOs' full
+			 * 1.2-3.5 V range and limits the card to 3.0 V with a
+			 * vendor-only "ocr-voltage" property; without that the
+			 * MMC core picked 3.5 V for both rails. Limit them here:
+			 * 3.0 V card supply, 1.8-3.0 V signalling.
+			 */
+			mt6368_vmch_eint_high: VMCH_EINT_HIGH {
+				regulator-compatible = "VMCH_EINT_HIGH";
+				regulator-name = "mt6368_vmch_eint_high";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <3000000>;
+				regulator-enable-ramp-delay = <680>;
+			};
+
+			mt6368_vmc: VMC {
+				regulator-compatible = "VMC";
+				regulator-name = "mt6368_vmc";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <3000000>;
+				regulator-enable-ramp-delay = <680>;
+			};
 		};
 	};
 };
 
 &mt6363 {
-	/delete-node/ mt6363keys;
+	interrupts = <4>;
+	interrupt-controller;
+	#interrupt-cells = <2>;
 };
 
 /* USB device mode only; no Type-C role detection yet. */
@@ -233,4 +258,306 @@
 		    "iocfg_br", "iocfg_lb", "iocfg_lt", "iocfg_tm", "iocfg_tl";
 	gpio-ranges = <&pio 0 0 250>;
 	mediatek,eint = <&apirq>;
+};
+
+/*
+ * Clock controllers. Registration only for now: no consumer references them
+ * yet and the kernel runs with clk_ignore_unused, so the tree mirrors the state
+ * the bootloader left. The CPU, GPU and SCP PLL blocks are left out until
+ * something needs them. Do not add assigned-clocks to these nodes.
+ */
+&clk26m {
+	clock-output-names = "clk26m";
+};
+
+/ {
+	clk32k: clock-32k {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <32000>;
+		clock-output-names = "clk32k";
+	};
+
+	ulposc: clock-ulposc {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <588000000>;
+		clock-output-names = "ulposc";
+	};
+};
+
+&soc {
+	hwv: syscon@10320000 {
+		compatible = "mediatek,mt6897-hwv", "syscon";
+		reg = <0x0 0x10320000 0x0 0x2000>;
+	};
+
+	vlp_cksys: syscon@1c013000 {
+		compatible = "mediatek,mt6897-vlp_cksys", "syscon";
+		reg = <0x0 0x1c013000 0x0 0x1000>;
+		#clock-cells = <1>;
+	};
+
+	ufscfg_ao: syscon@112b8000 {
+		compatible = "mediatek,mt6897-ufscfg_ao", "syscon";
+		reg = <0x0 0x112b8000 0x0 0x1000>;
+		#clock-cells = <1>;
+	};
+
+	ufscfg_pdn: syscon@112bb000 {
+		compatible = "mediatek,mt6897-ufscfg_pdn", "syscon";
+		reg = <0x0 0x112bb000 0x0 0x1000>;
+		#clock-cells = <1>;
+	};
+};
+
+&topckgen {
+	mediatek,hardware-voter = <&hwv>;
+};
+
+&apmixedsys {
+	mediatek,hardware-voter = <&hwv>;
+};
+
+&pericfg {
+	mediatek,hardware-voter = <&hwv>;
+};
+
+/*
+ * microSD slot (MSDC1). Pins, supplies and card detect are the stock tree's;
+ * its raw drive-strength index 3 is 8 mA.
+ */
+&pio {
+	mmc1_pins_default: mmc1-default-pins {
+		pins-cmd-dat {
+			pinmux = <0x4a01>, <0x4b01>, <0x4c01>, <0x4d01>, <0x4901>;
+			input-enable;
+			drive-strength = <8>;
+			bias-pull-up = <101>;
+		};
+
+		pins-clk {
+			pinmux = <0x4801>;
+			drive-strength = <8>;
+			bias-pull-down = <102>;
+		};
+	};
+};
+
+&soc {
+	mmc1: mmc@11240000 {
+		compatible = "mediatek,mt6897-mmc";
+		reg = <0x0 0x11240000 0x0 0x1000>,
+		      <0x0 0x11e00000 0x0 0x1000>;
+		interrupts = <GIC_SPI 166 IRQ_TYPE_LEVEL_HIGH 0>;
+		clocks = <&topckgen CLK_TOP_MSDC30_1_SEL>,
+			 <&pericfg CLK_PERAOP_MSDC1_HCLK>,
+			 <&pericfg CLK_PERAOP_MSDC1>,
+			 <&pericfg CLK_PERAOP_MSDC1_FCLK>;
+		/*
+		 * PERAOP_MSDC1 is deliberately not "source_cg": the driver
+		 * gates that clock while it programs the divider, and on this
+		 * SoC the same gate also clocks the register interface, so the
+		 * divider write was lost (CKDIV read back 0 and the card was
+		 * clocked far too fast). The vendor driver never gates it here
+		 * (need_gate_cg = false).
+		 */
+		clock-names = "source", "hclk", "pclk_cg", "axi_cg";
+		pinctrl-names = "default", "state_uhs";
+		pinctrl-0 = <&mmc1_pins_default>;
+		pinctrl-1 = <&mmc1_pins_default>;
+		bus-width = <4>;
+		max-frequency = <200000000>;
+		cap-sd-highspeed;
+		sd-uhs-sdr12;
+		sd-uhs-sdr25;
+		sd-uhs-sdr50;
+		sd-uhs-sdr104;
+		cd-gpios = <&pio 33 GPIO_ACTIVE_LOW>;
+		vmmc-supply = <&mt6368_vmch_eint_high>;
+		vqmmc-supply = <&mt6368_vmc>;
+		no-mmc;
+		no-sdio;
+		status = "okay";
+	};
+};
+
+/*
+ * I2C. Only the buses with board devices on them: i2c3 (RT9465 charger),
+ * i2c5 (MT6375 charger/Type-C, RT6160, RT5133), i2c6 (panel gate IC, PS5170
+ * redriver, speaker amp, flash LED driver), i2c13 (touchscreen). No client
+ * devices are described yet; the buses are up for probing only. Pins are left
+ * as the bootloader muxed them, as in the stock tree.
+ */
+&soc {
+	imp_iic_wrap_c: syscon@11281000 {
+		compatible = "mediatek,mt6897-imp_iic_wrap_c", "syscon";
+		reg = <0x0 0x11281000 0x0 0x1000>;
+		#clock-cells = <1>;
+	};
+
+	imp_iic_wrap_es: syscon@11cc4000 {
+		compatible = "mediatek,mt6897-imp_iic_wrap_es", "syscon";
+		reg = <0x0 0x11cc4000 0x0 0x1000>;
+		#clock-cells = <1>;
+	};
+
+	imp_iic_wrap_n: syscon@11f02000 {
+		compatible = "mediatek,mt6897-imp_iic_wrap_n", "syscon";
+		reg = <0x0 0x11f02000 0x0 0x1000>;
+		#clock-cells = <1>;
+	};
+
+	i2c3: i2c@11f00000 {
+		compatible = "mediatek,mt6897-i2c";
+		reg = <0x0 0x11f00000 0x0 0x1000>,
+		      <0x0 0x11300400 0x0 0x80>;
+		interrupts = <GIC_SPI 189 IRQ_TYPE_LEVEL_HIGH 0>;
+		clocks = <&imp_iic_wrap_n CLK_IMPN_AP_CLOCK_I2C3>,
+			 <&pericfg CLK_PERAOP_DMA_BCLK>;
+		clock-names = "main", "dma";
+		clock-div = <1>;
+		clock-frequency = <100000>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
+	i2c6: i2c@11280000 {
+		compatible = "mediatek,mt6897-i2c";
+		reg = <0x0 0x11280000 0x0 0x1000>,
+		      <0x0 0x11300600 0x0 0x80>;
+		interrupts = <GIC_SPI 192 IRQ_TYPE_LEVEL_HIGH 0>;
+		clocks = <&imp_iic_wrap_c CLK_IMPC_AP_CLOCK>,
+			 <&pericfg CLK_PERAOP_DMA_BCLK>;
+		clock-names = "main", "dma";
+		clock-div = <1>;
+		clock-frequency = <100000>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
+	i2c13: i2c@11cc3000 {
+		compatible = "mediatek,mt6897-i2c";
+		reg = <0x0 0x11cc3000 0x0 0x1000>,
+		      <0x0 0x11300b00 0x0 0x80>;
+		interrupts = <GIC_SPI 199 IRQ_TYPE_LEVEL_HIGH 0>;
+		clocks = <&imp_iic_wrap_es CLK_IMPES_AP_CLOCK_I2C13>,
+			 <&pericfg CLK_PERAOP_DMA_BCLK>;
+		clock-names = "main", "dma";
+		clock-div = <1>;
+		clock-frequency = <100000>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+};
+
+&i2c5 {
+	clocks = <&imp_iic_wrap_n CLK_IMPN_AP_CLOCK_I2C5>,
+		 <&pericfg CLK_PERAOP_DMA_BCLK>;
+	clock-frequency = <100000>;
+	status = "okay";
+};
+
+/ {
+	aliases {
+		i2c3 = &i2c3;
+		i2c5 = &i2c5;
+		i2c6 = &i2c6;
+		i2c13 = &i2c13;
+		mmc1 = &mmc1;
+	};
+};
+
+/* USB on its real clocks instead of whatever the bootloader left running. */
+&ssusb {
+	clocks = <&topckgen CLK_TOP_USB_TOP>,
+		 <&topckgen CLK_TOP_USB_XHCI>,
+		 <&pericfg CLK_PERAOP_SSUSB0_FRMCNT>;
+	clock-names = "sys_ck", "xhci_ck", "frmcnt_ck";
+};
+
+/*
+ * CPU frequency scaling through the MCU power manager's shared tables (same
+ * node as the stock tree). There is no thermal driver or fan control yet, so
+ * userspace should cap scaling_max_freq until there is.
+ */
+&soc {
+	performance: performance-controller@11bc00 {
+		compatible = "mediatek,cpufreq-hw";
+		reg = <0x0 0x0011bc10 0x0 0x120>,
+		      <0x0 0x0011bd30 0x0 0x120>,
+		      <0x0 0x0011be50 0x0 0x120>;
+		reg-names = "performance-domain0", "performance-domain1",
+			    "performance-domain2";
+		#performance-domain-cells = <1>;
+	};
+};
+
+&cpu0 { performance-domains = <&performance 0>; };
+&cpu1 { performance-domains = <&performance 0>; };
+&cpu2 { performance-domains = <&performance 0>; };
+&cpu3 { performance-domains = <&performance 0>; };
+&cpu4 { performance-domains = <&performance 1>; };
+&cpu5 { performance-domains = <&performance 1>; };
+&cpu6 { performance-domains = <&performance 1>; };
+&cpu7 { performance-domains = <&performance 2>; };
+
+/*
+ * Analog sticks: an MCU on SPI2 (GPIO11-14), same protocol as other recent
+ * Anbernic handhelds. The stock tree drives five GPIOs high for it: MCU supply
+ * (27), MCU reset (28, high = running), hall sensor supply (36), and the stick
+ * LED supply and enable (65, 30). The LED pair is left alone for now. Axis
+ * limits are the ROCKNIX defaults for this MCU, not yet calibrated here.
+ */
+&pio {
+	spi2_pins_default: spi2-default-pins {
+		pins-spi {
+			pinmux = <0x0b01>, <0x0c01>, <0x0d01>, <0x0e01>;
+		};
+	};
+
+	joypad-hall-vcc-hog {
+		gpio-hog;
+		gpios = <36 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "joypad-hall-vcc";
+	};
+
+	joypad-mcu-rst-hog {
+		gpio-hog;
+		gpios = <28 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "joypad-mcu-rst";
+	};
+};
+
+&spi2 {
+	clocks = <&topckgen CLK_TOP_MAINPLL_D6_D2>,
+		 <&topckgen CLK_TOP_SPI2_SEL>,
+		 <&pericfg CLK_PERAOP_SPI2_BCLK>;
+	clock-names = "parent-clk", "sel-clk", "spi-clk";
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi2_pins_default>;
+	status = "okay";
+
+	joypad@0 {
+		compatible = "anbernic,spi-mcu-joypad";
+		reg = <0>;
+		spi-max-frequency = <1400000>;
+		/* Give the MCU time between chip select and the first clock. */
+		spi-cs-setup-delay-ns = <100000>;
+		enable-gpios = <&pio 27 GPIO_ACTIVE_HIGH>;
+		poll-interval-ms = <5>;
+		abs-x-min = <2500>;
+		abs-x-max = <25000>;
+		abs-y-min = <2500>;
+		abs-y-max = <25000>;
+		abs-rx-min = <2500>;
+		abs-rx-max = <25000>;
+		abs-ry-min = <2500>;
+		abs-ry-max = <25000>;
+		deadzone-left = <3000>;
+		deadzone-right = <3000>;
+		deadzone-triggers = <32000>;
+	};
 };
