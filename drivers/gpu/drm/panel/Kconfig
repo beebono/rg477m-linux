@@ -1270,6 +1270,16 @@ config DRM_PANEL_TPO_TPG110
 	  400CH LTPS TFT LCD Single Chip Digital Driver for up to
 	  800x400 LCD panels.
 
+config DRM_PANEL_TRULY_FT8201P
+	tristate "Truly FT8201P 1280x960 DSI panel"
+	depends on OF
+	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
+	help
+	  Say Y here if you want to enable support for the Truly FT8201P
+	  (FocalTech FT8201P TDDI) 1280x960 4-lane MIPI-DSI video mode panel
+	  used in the Anbernic RG477M.
+
 config DRM_PANEL_TRULY_NT35597_WQXGA
 	tristate "Truly WQXGA"
 	depends on OF
