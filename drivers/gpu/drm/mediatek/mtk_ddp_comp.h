@@ -35,6 +35,7 @@ enum mtk_ddp_comp_type {
 	MTK_DISP_OVL,
 	MTK_DISP_OVL_2L,
 	MTK_DISP_OVL_ADAPTOR,
+	MTK_DISP_OVLSYS_ADAPTOR,
 	MTK_DISP_POSTMASK,
 	MTK_DISP_PWM,
 	MTK_DISP_RDMA,
@@ -90,6 +91,11 @@ struct mtk_ddp_comp_funcs {
 	void (*remove)(struct device *dev, struct mtk_mutex *mutex);
 	unsigned int (*encoder_index)(struct device *dev);
 	enum drm_mode_status (*mode_valid)(struct device *dev, const struct drm_display_mode *mode);
+	/*
+	 * Quiesce hardware that the bootloader left running, before the first
+	 * modeset reprograms the pipeline. Called once per CRTC, sink first.
+	 */
+	void (*handoff)(struct device *dev);
 };
 
 struct mtk_ddp_comp {
@@ -339,6 +345,12 @@ static inline bool mtk_ddp_comp_disconnect(struct mtk_ddp_comp *comp, struct dev
 		return true;
 	}
 	return false;
+}
+
+static inline void mtk_ddp_comp_handoff(struct mtk_ddp_comp *comp)
+{
+	if (comp->funcs && comp->funcs->handoff)
+		comp->funcs->handoff(comp->dev);
 }
 
 static inline void mtk_ddp_comp_encoder_index_set(struct mtk_ddp_comp *comp)

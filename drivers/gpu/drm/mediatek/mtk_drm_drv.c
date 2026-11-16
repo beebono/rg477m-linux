@@ -231,6 +231,16 @@ static const unsigned int mt8195_mtk_ddp_ext[] = {
 	DDP_COMPONENT_DP_INTF1,
 };
 
+/*
+ * MT6897: OVL0_2L in OVLSYS0 feeds DISPSYS0 through the DLO_ASYNC3/DLI_ASYNC0
+ * relays; the OVLSYS side is wrapped in the OVLSYS adaptor pseudo component
+ * (mtk_disp_ovlsys.c), the DISPSYS side bypasses the PQ engines.
+ */
+static const unsigned int mt6897_mtk_ddp_main[] = {
+	DDP_COMPONENT_DRM_OVLSYS_ADAPTOR,
+	DDP_COMPONENT_DSI0,
+};
+
 static const struct mtk_mmsys_driver_data mt2701_mmsys_driver_data = {
 	.main_path = mt2701_mtk_ddp_main,
 	.main_len = ARRAY_SIZE(mt2701_mtk_ddp_main),
@@ -331,6 +341,12 @@ static const struct mtk_mmsys_driver_data mt8365_mmsys_driver_data = {
 	.mmsys_dev_num = 1,
 };
 
+static const struct mtk_mmsys_driver_data mt6897_dispsys0_driver_data = {
+	.main_path = mt6897_mtk_ddp_main,
+	.main_len = ARRAY_SIZE(mt6897_mtk_ddp_main),
+	.mmsys_dev_num = 1,
+};
+
 static const struct of_device_id mtk_drm_of_ids[] = {
 	{ .compatible = "mediatek,mt2701-mmsys",
 	  .data = &mt2701_mmsys_driver_data},
@@ -360,6 +376,8 @@ static const struct of_device_id mtk_drm_of_ids[] = {
 	  .data = &mt8195_vdosys1_driver_data},
 	{ .compatible = "mediatek,mt8365-mmsys",
 	  .data = &mt8365_mmsys_driver_data},
+	{ .compatible = "mediatek,mt6897-dispsys0_config",
+	  .data = &mt6897_dispsys0_driver_data},
 	{ }
 };
 MODULE_DEVICE_TABLE(of, mtk_drm_of_ids);
@@ -652,10 +670,13 @@ static int mtk_drm_bind(struct device *dev)
 	for (i = 0; i < private->data->mmsys_dev_num; i++)
 		private->all_drm_private[i]->drm = drm;
 
+	/* BRINGUP(mt6897): breadcrumbs around the steps that touch the display */
+	dev_info(dev, "bringup: drm bind: kms init (component bind)\n");
 	ret = mtk_drm_kms_init(drm);
 	if (ret < 0)
 		goto err_free;
 
+	dev_info(dev, "bringup: drm bind: removing conflicting framebuffers (simpledrm)\n");
 	ret = aperture_remove_all_conflicting_devices(DRIVER_NAME);
 	if (ret < 0)
 		dev_err(dev, "Error %d while removing conflicting aperture devices", ret);
@@ -664,7 +685,9 @@ static int mtk_drm_bind(struct device *dev)
 	if (ret < 0)
 		goto err_deinit;
 
+	dev_info(dev, "bringup: drm bind: registered, starting fbdev client (first modeset)\n");
 	drm_client_setup(drm, NULL);
+	dev_info(dev, "bringup: drm bind: done\n");
 
 	return 0;
 
@@ -758,6 +781,8 @@ static const struct of_device_id mtk_ddp_comp_dt_ids[] = {
 	  .data = (void *)MTK_DISP_MUTEX },
 	{ .compatible = "mediatek,mt8365-disp-mutex",
 	  .data = (void *)MTK_DISP_MUTEX },
+	{ .compatible = "mediatek,mt6897-disp-mutex",
+	  .data = (void *)MTK_DISP_MUTEX },
 	{ .compatible = "mediatek,mt8173-disp-od",
 	  .data = (void *)MTK_DISP_OD },
 	{ .compatible = "mediatek,mt2701-disp-ovl",
@@ -825,6 +850,8 @@ static const struct of_device_id mtk_ddp_comp_dt_ids[] = {
 	{ .compatible = "mediatek,mt8186-dsi",
 	  .data = (void *)MTK_DSI },
 	{ .compatible = "mediatek,mt8188-dsi",
+	  .data = (void *)MTK_DSI },
+	{ .compatible = "mediatek,mt6897-dsi",
 	  .data = (void *)MTK_DSI },
 	{ }
 };
@@ -1118,6 +1145,23 @@ static int mtk_drm_probe(struct platform_device *pdev)
 		component_match_add(dev, &match, compare_dev, &ovl_adaptor->dev);
 	}
 
+	/* Bringup ovlsys adaptor (MT6897) */
+	if (mtk_drm_find_mmsys_comp(private, DDP_COMPONENT_DRM_OVLSYS_ADAPTOR)) {
+		struct platform_device *ovlsys;
+
+		ovlsys = platform_device_register_data(dev, "mediatek-disp-ovlsys",
+						       PLATFORM_DEVID_AUTO,
+						       (void *)private->mmsys_dev,
+						       sizeof(*private->mmsys_dev));
+		if (IS_ERR(ovlsys))
+			return PTR_ERR(ovlsys);
+		private->ddp_comp[DDP_COMPONENT_DRM_OVLSYS_ADAPTOR].dev = &ovlsys->dev;
+		mtk_ddp_comp_init(dev, NULL, &private->ddp_comp[DDP_COMPONENT_DRM_OVLSYS_ADAPTOR],
+				  DDP_COMPONENT_DRM_OVLSYS_ADAPTOR);
+		component_match_add(dev, &match, compare_dev, &ovlsys->dev);
+		dev_info(dev, "bringup: registered %s\n", dev_name(&ovlsys->dev));
+	}
+
 	/* Iterate over sibling DISP function blocks */
 	for_each_child_of_node(phandle->parent, node) {
 		enum mtk_ddp_comp_type comp_type;
@@ -1276,6 +1320,7 @@ static struct platform_driver * const mtk_drm_drivers[] = {
 	&mtk_disp_merge_driver,
 	&mtk_disp_ovl_adaptor_driver,
 	&mtk_disp_ovl_driver,
+	&mtk_disp_ovlsys_driver,
 	&mtk_disp_rdma_driver,
 	&mtk_dpi_driver,
 	&mtk_drm_platform_driver,

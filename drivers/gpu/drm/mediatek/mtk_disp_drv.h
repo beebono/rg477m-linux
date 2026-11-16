@@ -49,6 +49,7 @@ unsigned int mtk_dpi_encoder_index(struct device *dev);
 
 void mtk_dsi_ddp_start(struct device *dev);
 void mtk_dsi_ddp_stop(struct device *dev);
+void mtk_dsi_ddp_handoff(struct device *dev);
 unsigned int mtk_dsi_encoder_index(struct device *dev);
 
 int mtk_gamma_clk_enable(struct device *dev);
@@ -139,6 +140,41 @@ const u32 *mtk_ovl_adaptor_get_formats(struct device *dev);
 size_t mtk_ovl_adaptor_get_num_formats(struct device *dev);
 enum drm_mode_status mtk_ovl_adaptor_mode_valid(struct device *dev,
 						const struct drm_display_mode *mode);
+
+int mtk_ovlsys_adaptor_power_on(struct device *dev);
+void mtk_ovlsys_adaptor_power_off(struct device *dev);
+int mtk_ovlsys_adaptor_clk_enable(struct device *dev);
+void mtk_ovlsys_adaptor_clk_disable(struct device *dev);
+void mtk_ovlsys_adaptor_config(struct device *dev, unsigned int w,
+			       unsigned int h, unsigned int vrefresh,
+			       unsigned int bpc, struct cmdq_pkt *cmdq_pkt);
+void mtk_ovlsys_adaptor_start(struct device *dev);
+void mtk_ovlsys_adaptor_stop(struct device *dev);
+void mtk_ovlsys_adaptor_register_vblank_cb(struct device *dev,
+					   void (*vblank_cb)(void *),
+					   void *vblank_cb_data);
+void mtk_ovlsys_adaptor_unregister_vblank_cb(struct device *dev);
+void mtk_ovlsys_adaptor_enable_vblank(struct device *dev);
+void mtk_ovlsys_adaptor_disable_vblank(struct device *dev);
+unsigned int mtk_ovlsys_adaptor_supported_rotations(struct device *dev);
+unsigned int mtk_ovlsys_adaptor_layer_nr(struct device *dev);
+int mtk_ovlsys_adaptor_layer_check(struct device *dev, unsigned int idx,
+				   struct mtk_plane_state *state);
+void mtk_ovlsys_adaptor_layer_config(struct device *dev, unsigned int idx,
+				     struct mtk_plane_state *state,
+				     struct cmdq_pkt *cmdq_pkt);
+struct device *mtk_ovlsys_adaptor_dma_dev_get(struct device *dev);
+u32 mtk_ovlsys_adaptor_get_blend_modes(struct device *dev);
+const u32 *mtk_ovlsys_adaptor_get_formats(struct device *dev);
+size_t mtk_ovlsys_adaptor_get_num_formats(struct device *dev);
+bool mtk_ovlsys_adaptor_is_afbc_supported(struct device *dev);
+void mtk_ovlsys_adaptor_connect(struct device *dev, struct device *mmsys_dev,
+				unsigned int next);
+void mtk_ovlsys_adaptor_disconnect(struct device *dev, struct device *mmsys_dev,
+				   unsigned int next);
+void mtk_ovlsys_adaptor_add_comp(struct device *dev, struct mtk_mutex *mutex);
+void mtk_ovlsys_adaptor_remove_comp(struct device *dev, struct mtk_mutex *mutex);
+void mtk_ovlsys_adaptor_handoff(struct device *dev);
 
 void mtk_rdma_bypass_shadow(struct device *dev);
 int mtk_rdma_clk_enable(struct device *dev);

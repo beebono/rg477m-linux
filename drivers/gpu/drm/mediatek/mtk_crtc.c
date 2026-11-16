@@ -71,6 +71,9 @@ struct mtk_crtc {
 	/* lock for config_updating to cmd buffer */
 	spinlock_t			config_lock;
 
+	/* bootloader pipeline already quiesced (see mtk_crtc_handoff()) */
+	bool				handoff_done;
+
 	struct mtk_ddp_comp		*ddp_comp[];
 };
 
@@ -377,6 +380,9 @@ static int mtk_crtc_ddp_hw_init(struct mtk_crtc *mtk_crtc)
 		return ret;
 	}
 
+	drm_info(dev, "bringup: crtc hw init %ux%u@%u bpc %u, %u components\n",
+		 width, height, vrefresh, bpc, mtk_crtc->ddp_comp_nr);
+
 	ret = mtk_mutex_prepare(mtk_crtc->mutex);
 	if (ret < 0) {
 		drm_err(dev, "Failed to enable mutex clock: %d\n", ret);
@@ -388,6 +394,8 @@ static int mtk_crtc_ddp_hw_init(struct mtk_crtc *mtk_crtc)
 		drm_err(dev, "Failed to enable component clocks: %d\n", ret);
 		goto err_mutex_unprepare;
 	}
+
+	drm_info(dev, "bringup: crtc hw init: routing and mutex\n");
 
 	for (i = 0; i < mtk_crtc->ddp_comp_nr - 1; i++) {
 		if (!mtk_ddp_comp_connect(mtk_crtc->ddp_comp[i], mtk_crtc->mmsys_dev,
@@ -409,9 +417,11 @@ static int mtk_crtc_ddp_hw_init(struct mtk_crtc *mtk_crtc)
 		if (i == 1)
 			mtk_ddp_comp_bgclr_in_on(comp);
 
+		drm_info(dev, "bringup: crtc hw init: config/start comp %u\n", comp->id);
 		mtk_ddp_comp_config(comp, width, height, vrefresh, bpc, NULL);
 		mtk_ddp_comp_start(comp);
 	}
+	drm_info(dev, "bringup: crtc hw init done\n");
 
 	/* Initially configure all planes */
 	for (i = 0; i < mtk_crtc->layer_nr; i++) {
@@ -774,6 +784,37 @@ void mtk_crtc_async_update(struct drm_crtc *crtc, struct drm_plane *plane,
 	mtk_crtc_update_config(mtk_crtc, false);
 }
 
+/*
+ * The bootloader may leave the display pipeline running (and the first
+ * modeset is the first time this driver touches it). Before the first enable
+ * reroutes the crossbars and rewrites the mutexes, let the components that
+ * know how to stop what the bootloader left behind do so, output first, then
+ * disable our mutex (the bootloader uses the same mutex 0).
+ */
+static void mtk_crtc_handoff(struct mtk_crtc *mtk_crtc)
+{
+	bool any = false;
+	int i;
+
+	if (mtk_crtc->handoff_done)
+		return;
+	mtk_crtc->handoff_done = true;
+
+	for (i = mtk_crtc->ddp_comp_nr - 1; i >= 0; i--) {
+		struct mtk_ddp_comp *comp = mtk_crtc->ddp_comp[i];
+
+		if (comp->funcs && comp->funcs->handoff) {
+			mtk_ddp_comp_handoff(comp);
+			any = true;
+		}
+	}
+
+	if (any) {
+		mtk_mutex_disable(mtk_crtc->mutex);
+		drm_info(mtk_crtc->base.dev, "bringup: bootloader pipeline quiesced\n");
+	}
+}
+
 static void mtk_crtc_atomic_enable(struct drm_crtc *crtc,
 				   struct drm_atomic_commit *state)
 {
@@ -783,6 +824,8 @@ static void mtk_crtc_atomic_enable(struct drm_crtc *crtc,
 	int ret;
 
 	drm_dbg_driver(dev, "%s %d\n", __func__, crtc->base.id);
+
+	mtk_crtc_handoff(mtk_crtc);
 
 	ret = mtk_ddp_comp_power_on(comp);
 	if (ret < 0) {
@@ -1036,7 +1079,8 @@ int mtk_crtc_create(struct drm_device *drm_dev, const unsigned int *path,
 		/* Not all drm components have a DTS device node, such as ovl_adaptor,
 		 * which is the drm bring up sub driver
 		 */
-		if (!node && comp_id != DDP_COMPONENT_DRM_OVL_ADAPTOR) {
+		if (!node && comp_id != DDP_COMPONENT_DRM_OVL_ADAPTOR &&
+		    comp_id != DDP_COMPONENT_DRM_OVLSYS_ADAPTOR) {
 			dev_info(dev,
 				"Not creating crtc %d because component %d is disabled or missing\n",
 				crtc_i, comp_id);

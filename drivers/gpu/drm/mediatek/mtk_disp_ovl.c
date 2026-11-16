@@ -51,6 +51,22 @@
 #define DISP_REG_OVL_ADDR(ovl, n)		((ovl)->data->addr + 0x20 * (n))
 #define DISP_REG_OVL_HDR_ADDR(ovl, n)		((ovl)->data->addr + 0x20 * (n) + 0x04)
 #define DISP_REG_OVL_HDR_PITCH(ovl, n)		((ovl)->data->addr + 0x20 * (n) + 0x08)
+/* MT6985 generation: bits [35:32] of the layer address (34-bit DMA) */
+#define DISP_REG_OVL_ADDR_MSB(ovl, n)		((ovl)->data->addr + 0x20 * (n) + 0x0c)
+
+/* MT6985 generation golden settings registers */
+#define DISP_REG_OVL_RDMA_FIFO_CTRL(n)		(0x00d0 + 0x20 * (n))
+#define DISP_REG_OVL_RDMA_MEM_GMC_S2(n)		(0x01e0 + 0x04 * (n))
+#define DISP_REG_OVL_RDMA_BURST_CON1		0x01f4
+#define OVL_RDMA_BURST_CON1_BURST16_EN			BIT(28)
+#define DISP_REG_OVL_RDMA_GREQ_NUM		0x01f8
+#define DISP_REG_OVL_RDMA_GREQ_URG_NUM		0x01fc
+#define DISP_REG_OVL_RDMA_ULTRA_SRC		0x020c
+#define DISP_REG_OVL_RDMA_BUF_LOW(n)		(0x0210 + 0x04 * (n))
+#define DISP_REG_OVL_RDMA_BUF_HIGH(n)		(0x0220 + 0x04 * (n))
+#define OVL_DATAPATH_GCLAST_EN				BIT(24)
+#define OVL_DATAPATH_HDR_GCLAST_EN			BIT(25)
+#define OVL_DATAPATH_OUTPUT_CLAMP			BIT(26)
 
 #define GMC_THRESHOLD_BITS	16
 #define GMC_THRESHOLD_HIGH	((1 << GMC_THRESHOLD_BITS) / 4)
@@ -139,6 +155,24 @@ static const u32 mt8195_formats[] = {
 	DRM_FORMAT_YUYV,
 };
 
+/*
+ * Per-layer RDMA QoS settings ("golden settings") for SoCs whose OVL runs in
+ * direct link with a deep FIFO (MT6985 generation). Values are written on
+ * every config so that they survive OVL_RST.
+ */
+struct mtk_disp_ovl_golden {
+	u32 rdma_gmc;
+	u32 rdma_fifo_ctrl;
+	u32 rdma_mem_gmc_s2;
+	u32 rdma_greq_num;
+	u32 rdma_greq_urg_num;
+	u32 rdma_ultra_src;
+	u32 rdma_buf_low;
+	u32 rdma_buf_high;
+	u32 datapath_con;
+	bool burst16;
+};
+
 struct mtk_disp_ovl_data {
 	unsigned int addr;
 	unsigned int gmc_bits;
@@ -150,6 +184,8 @@ struct mtk_disp_ovl_data {
 	const u32 *formats;
 	size_t num_formats;
 	bool supports_clrfmt_ext;
+	bool supports_addr_msb;
+	const struct mtk_disp_ovl_golden *golden;
 };
 
 /*
@@ -260,15 +296,31 @@ void mtk_ovl_clk_disable(struct device *dev)
 void mtk_ovl_start(struct device *dev)
 {
 	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
+	const struct mtk_disp_ovl_golden *golden = ovl->data->golden;
 
 	if (ovl->data->smi_id_en) {
 		unsigned int reg;
 
 		reg = readl(ovl->regs + DISP_REG_OVL_DATAPATH_CON);
 		reg = reg | OVL_LAYER_SMI_ID_EN;
+		if (golden)
+			reg |= golden->datapath_con;
 		writel_relaxed(reg, ovl->regs + DISP_REG_OVL_DATAPATH_CON);
 	}
+	if (golden && golden->burst16) {
+		unsigned int reg;
+
+		reg = readl(ovl->regs + DISP_REG_OVL_RDMA_BURST_CON1);
+		writel_relaxed(reg | OVL_RDMA_BURST_CON1_BURST16_EN,
+			       ovl->regs + DISP_REG_OVL_RDMA_BURST_CON1);
+	}
 	writel_relaxed(0x1, ovl->regs + DISP_REG_OVL_EN);
+
+	/* BRINGUP(mt6897) */
+	if (golden)
+		dev_info(dev, "bringup: ovl start: EN 0x%x DATAPATH_CON 0x%08x\n",
+			 readl(ovl->regs + DISP_REG_OVL_EN),
+			 readl(ovl->regs + DISP_REG_OVL_DATAPATH_CON));
 }
 
 void mtk_ovl_stop(struct device *dev)
@@ -329,6 +381,32 @@ void mtk_ovl_config(struct device *dev, unsigned int w,
 
 	mtk_ddp_write(cmdq_pkt, 0x1, &ovl->cmdq_reg, ovl->regs, DISP_REG_OVL_RST);
 	mtk_ddp_write(cmdq_pkt, 0x0, &ovl->cmdq_reg, ovl->regs, DISP_REG_OVL_RST);
+
+	if (ovl->data->golden) {
+		const struct mtk_disp_ovl_golden *golden = ovl->data->golden;
+		unsigned int i;
+
+		for (i = 0; i < ovl->data->layer_nr; i++) {
+			mtk_ddp_write_relaxed(cmdq_pkt, golden->rdma_fifo_ctrl,
+					      &ovl->cmdq_reg, ovl->regs,
+					      DISP_REG_OVL_RDMA_FIFO_CTRL(i));
+			mtk_ddp_write_relaxed(cmdq_pkt, golden->rdma_mem_gmc_s2,
+					      &ovl->cmdq_reg, ovl->regs,
+					      DISP_REG_OVL_RDMA_MEM_GMC_S2(i));
+			mtk_ddp_write_relaxed(cmdq_pkt, golden->rdma_buf_low,
+					      &ovl->cmdq_reg, ovl->regs,
+					      DISP_REG_OVL_RDMA_BUF_LOW(i));
+			mtk_ddp_write_relaxed(cmdq_pkt, golden->rdma_buf_high,
+					      &ovl->cmdq_reg, ovl->regs,
+					      DISP_REG_OVL_RDMA_BUF_HIGH(i));
+		}
+		mtk_ddp_write_relaxed(cmdq_pkt, golden->rdma_greq_num, &ovl->cmdq_reg,
+				      ovl->regs, DISP_REG_OVL_RDMA_GREQ_NUM);
+		mtk_ddp_write_relaxed(cmdq_pkt, golden->rdma_greq_urg_num, &ovl->cmdq_reg,
+				      ovl->regs, DISP_REG_OVL_RDMA_GREQ_URG_NUM);
+		mtk_ddp_write(cmdq_pkt, golden->rdma_ultra_src, &ovl->cmdq_reg,
+			      ovl->regs, DISP_REG_OVL_RDMA_ULTRA_SRC);
+	}
 }
 
 unsigned int mtk_ovl_layer_nr(struct device *dev)
@@ -379,7 +457,9 @@ void mtk_ovl_layer_on(struct device *dev, unsigned int idx,
 		      (GMC_THRESHOLD_BITS - ovl->data->gmc_bits);
 	gmc_thrshd_h = GMC_THRESHOLD_HIGH >>
 		      (GMC_THRESHOLD_BITS - ovl->data->gmc_bits);
-	if (ovl->data->gmc_bits == 10)
+	if (ovl->data->golden)
+		gmc_value = ovl->data->golden->rdma_gmc;
+	else if (ovl->data->gmc_bits == 10)
 		gmc_value = gmc_thrshd_h | gmc_thrshd_h << 16;
 	else
 		gmc_value = gmc_thrshd_l | gmc_thrshd_l << 8 |
@@ -496,7 +576,7 @@ void mtk_ovl_layer_config(struct device *dev, unsigned int idx,
 {
 	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
 	struct mtk_plane_pending_state *pending = &state->pending;
-	unsigned int addr = pending->addr;
+	dma_addr_t addr = pending->addr;
 	unsigned int pitch_lsb = pending->pitch & GENMASK(15, 0);
 	unsigned int fmt = pending->format;
 	unsigned int rotation = pending->rotation;
@@ -561,8 +641,12 @@ void mtk_ovl_layer_config(struct device *dev, unsigned int idx,
 			      DISP_REG_OVL_SRC_SIZE(idx));
 	mtk_ddp_write_relaxed(cmdq_pkt, offset, &ovl->cmdq_reg, ovl->regs,
 			      DISP_REG_OVL_OFFSET(idx));
-	mtk_ddp_write_relaxed(cmdq_pkt, addr, &ovl->cmdq_reg, ovl->regs,
+	mtk_ddp_write_relaxed(cmdq_pkt, lower_32_bits(addr), &ovl->cmdq_reg, ovl->regs,
 			      DISP_REG_OVL_ADDR(ovl, idx));
+	if (ovl->data->supports_addr_msb)
+		mtk_ddp_write_mask(cmdq_pkt, upper_32_bits(addr) & 0xf,
+				   &ovl->cmdq_reg, ovl->regs,
+				   DISP_REG_OVL_ADDR_MSB(ovl, idx), 0xf);
 
 	if (ovl->data->supports_afbc)
 		mtk_ovl_afbc_layer_config(ovl, idx, pending, cmdq_pkt);
@@ -652,6 +736,11 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 		pm_runtime_disable(dev);
 		return dev_err_probe(dev, ret, "Failed to add component\n");
 	}
+
+	/* BRINGUP(mt6897): probe does not access the hardware */
+	if (priv->data->golden)
+		dev_info(dev, "bringup: ovl probed, irq %d, %u layers\n", irq,
+			 priv->data->layer_nr);
 
 	return 0;
 }
@@ -749,6 +838,42 @@ static const struct mtk_disp_ovl_data mt8195_ovl_driver_data = {
 	.supports_clrfmt_ext = true,
 };
 
+/*
+ * MT6897 OVL*_2L in OVLSYS: golden settings are the downstream mediatek_v2
+ * direct-link values (mtk_ovl_cal_golden_setting with fifo_size 1024,
+ * issue_req_th_dl 511, issue_req_th_urg_dl 255), which are also what the
+ * bootloader leaves behind, except GREQ_NUM/GREQ_URG_NUM where the
+ * bootloader values (0xf1ff00ff/0xff) are kept.
+ */
+static const struct mtk_disp_ovl_golden mt6897_ovl_golden = {
+	.rdma_gmc = 0x03ff03ff,
+	.rdma_fifo_ctrl = 0x04000000,
+	.rdma_mem_gmc_s2 = 0x20ff01ff,
+	.rdma_greq_num = 0xf1ff00ff,
+	.rdma_greq_urg_num = 0x000000ff,
+	.rdma_ultra_src = 0x00008040,
+	.rdma_buf_low = 0x00000000,
+	.rdma_buf_high = 0x80000000,
+	.datapath_con = OVL_DATAPATH_GCLAST_EN | OVL_DATAPATH_HDR_GCLAST_EN |
+			OVL_DATAPATH_OUTPUT_CLAMP,
+	.burst16 = true,
+};
+
+static const struct mtk_disp_ovl_data mt6897_ovl_driver_data = {
+	.addr = DISP_REG_OVL_ADDR_MT8173,
+	.gmc_bits = 10,
+	.layer_nr = 2,
+	.fmt_rgb565_is_0 = true,
+	.smi_id_en = true,
+	.blend_modes = BIT(DRM_MODE_BLEND_PREMULTI) |
+		       BIT(DRM_MODE_BLEND_COVERAGE) |
+		       BIT(DRM_MODE_BLEND_PIXEL_NONE),
+	.formats = mt8173_formats,
+	.num_formats = ARRAY_SIZE(mt8173_formats),
+	.supports_addr_msb = true,
+	.golden = &mt6897_ovl_golden,
+};
+
 static const struct of_device_id mtk_disp_ovl_driver_dt_match[] = {
 	{ .compatible = "mediatek,mt2701-disp-ovl",
 	  .data = &mt2701_ovl_driver_data},
@@ -766,6 +891,8 @@ static const struct of_device_id mtk_disp_ovl_driver_dt_match[] = {
 	  .data = &mt8192_ovl_2l_driver_data},
 	{ .compatible = "mediatek,mt8195-disp-ovl",
 	  .data = &mt8195_ovl_driver_data},
+	{ .compatible = "mediatek,mt6897-disp-ovl",
+	  .data = &mt6897_ovl_driver_data},
 	{},
 };
 MODULE_DEVICE_TABLE(of, mtk_disp_ovl_driver_dt_match);
