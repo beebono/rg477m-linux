@@ -548,6 +548,7 @@
 		spi-cs-setup-delay-ns = <100000>;
 		enable-gpios = <&pio 27 GPIO_ACTIVE_HIGH>;
 		poll-interval-ms = <5>;
+		swap-sticks;
 		abs-x-min = <2500>;
 		abs-x-max = <25000>;
 		abs-y-min = <2500>;
@@ -561,3 +562,93 @@
 		deadzone-triggers = <32000>;
 	};
 };
+
+/*
+ * Buttons: twenty active-low GPIO switches, the list and key codes of the
+ * stock tree's "singleadc-joypad" node (which has no analog inputs on this
+ * board). L2/R2 are plain switches, not analog triggers.
+ */
+#include <dt-bindings/input/input.h>
+
+&pio {
+	gamepad_pins: gamepad-pins {
+		pins-buttons {
+			pinmux = <0x0100>, <0x0300>, <0x0600>, <0x0800>, <0x0a00>,
+				 <0x0f00>, <0x1000>, <0x1100>, <0x1200>, <0x1300>,
+				 <0x1400>, <0x1500>, <0x1600>, <0x1700>, <0x1800>,
+				 <0x1900>, <0x1a00>, <0x3d00>;
+			input-enable;
+			bias-pull-up;
+		};
+
+		/* GPIO31/32 have R1R0 pull resistors; 101 is the stock setting. */
+		pins-volume {
+			pinmux = <0x1f00>, <0x2000>;
+			input-enable;
+			bias-pull-up = <101>;
+		};
+	};
+};
+
+/ {
+	gamepad {
+		compatible = "gpio-keys";
+		label = "RG477M Gamepad";
+		pinctrl-names = "default";
+		pinctrl-0 = <&gamepad_pins>;
+
+		button-dpad-up {
+			label = "DPAD-UP";
+			gpios = <&pio 19 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_ABS>;
+			linux,code = <ABS_HAT0Y>;
+			linux,input-value = <(-1)>;
+			debounce-interval = <2>;
+		};
+
+		button-dpad-down {
+			label = "DPAD-DOWN";
+			gpios = <&pio 22 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_ABS>;
+			linux,code = <ABS_HAT0Y>;
+			linux,input-value = <1>;
+			debounce-interval = <2>;
+		};
+
+		button-dpad-left {
+			label = "DPAD-LEFT";
+			gpios = <&pio 20 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_ABS>;
+			linux,code = <ABS_HAT0X>;
+			linux,input-value = <(-1)>;
+			debounce-interval = <2>;
+		};
+
+		button-dpad-right {
+			label = "DPAD-RIGHT";
+			gpios = <&pio 21 GPIO_ACTIVE_LOW>;
+			linux,input-type = <EV_ABS>;
+			linux,code = <ABS_HAT0X>;
+			linux,input-value = <1>;
+			debounce-interval = <2>;
+		};
+
+		button-y { label = "BTN-Y"; gpios = <&pio 24 GPIO_ACTIVE_LOW>; linux,code = <0x134>; debounce-interval = <2>; };
+		button-b { label = "BTN-B"; gpios = <&pio 26 GPIO_ACTIVE_LOW>; linux,code = <0x131>; debounce-interval = <2>; };
+		button-x { label = "BTN-X"; gpios = <&pio 23 GPIO_ACTIVE_LOW>; linux,code = <0x133>; debounce-interval = <2>; };
+		button-a { label = "BTN-A"; gpios = <&pio 25 GPIO_ACTIVE_LOW>; linux,code = <0x130>; debounce-interval = <2>; };
+		button-select { label = "SELECT"; gpios = <&pio 8 GPIO_ACTIVE_LOW>; linux,code = <BTN_SELECT>; debounce-interval = <2>; };
+		button-start { label = "START"; gpios = <&pio 10 GPIO_ACTIVE_LOW>; linux,code = <BTN_START>; debounce-interval = <2>; };
+		button-l1 { label = "L1"; gpios = <&pio 16 GPIO_ACTIVE_LOW>; linux,code = <BTN_TL>; debounce-interval = <2>; };
+		button-r1 { label = "R1"; gpios = <&pio 15 GPIO_ACTIVE_LOW>; linux,code = <BTN_TR>; debounce-interval = <2>; };
+		button-l2 { label = "L2"; gpios = <&pio 61 GPIO_ACTIVE_LOW>; linux,code = <BTN_TL2>; debounce-interval = <5>; };
+		button-r2 { label = "R2"; gpios = <&pio 1 GPIO_ACTIVE_LOW>; linux,code = <BTN_TR2>; debounce-interval = <5>; };
+		button-thumbl { label = "L3"; gpios = <&pio 18 GPIO_ACTIVE_LOW>; linux,code = <BTN_THUMBL>; debounce-interval = <2>; };
+		button-thumbr { label = "R3"; gpios = <&pio 6 GPIO_ACTIVE_LOW>; linux,code = <BTN_THUMBR>; debounce-interval = <2>; };
+		button-vol-down { label = "VOL-DOWN"; gpios = <&pio 31 GPIO_ACTIVE_LOW>; linux,code = <KEY_VOLUMEDOWN>; debounce-interval = <2>; };
+		button-vol-up { label = "VOL-UP"; gpios = <&pio 32 GPIO_ACTIVE_LOW>; linux,code = <KEY_VOLUMEUP>; debounce-interval = <2>; };
+		button-back { label = "BACK"; gpios = <&pio 17 GPIO_ACTIVE_LOW>; linux,code = <KEY_BACK>; debounce-interval = <2>; };
+		button-f10 { label = "F10"; gpios = <&pio 3 GPIO_ACTIVE_LOW>; linux,code = <KEY_F10>; debounce-interval = <2>; };
+	};
+};
+
