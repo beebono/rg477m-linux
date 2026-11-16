@@ -32,7 +32,7 @@
 	 * still reset and falls back to the other slot.
 	 */
 	chosen {
-		bootargs = "bootconfig console=tty0 ignore_loglevel printk.devkmsg=on clk_ignore_unused pd_ignore_unused panic=5 watchdog.open_timeout=45";
+		bootargs = "bootconfig console=ttyS0,921600n8 console=tty0 ignore_loglevel printk.devkmsg=on clk_ignore_unused pd_ignore_unused panic=5 watchdog.open_timeout=45";
 	};
 
 	reserved-memory {
@@ -91,9 +91,7 @@
 	status = "disabled";
 };
 
-&scpsys {
-	status = "disabled";
-};
+
 
 &watchdog {
 	status = "okay";
@@ -305,9 +303,18 @@
 	};
 
 	ufscfg_pdn: syscon@112bb000 {
-		compatible = "mediatek,mt6897-ufscfg_pdn", "syscon";
+		compatible = "mediatek,mt6897-ufscfg_pdn", "syscon", "simple-mfd";
 		reg = <0x0 0x112bb000 0x0 0x1000>;
 		#clock-cells = <1>;
+
+		/* UniPro, crypto and host controller resets, as in the stock tree. */
+		ufscfg_pdn_rst: reset-controller {
+			compatible = "ti,syscon-reset";
+			#reset-cells = <1>;
+			ti,reset-bits = <0x48 0 0x4c 0 0 0 0x1c>,
+					<0x48 1 0x4c 1 0 0 0x1c>,
+					<0x48 2 0x4c 2 0 0 0x1c>;
+		};
 	};
 };
 
@@ -653,9 +660,10 @@
 };
 
 /*
- * UFS, first pass: clocks as in the stock tree, but no supplies and no reset
- * lines, so the kernel cannot power-cycle or hard-reset the device and the
- * rails stay as the bootloader left them. Single interrupt, MCQ off.
+ * UFS: clocks and host resets as in the stock tree. No supplies yet, so the
+ * kernel cannot power-cycle the device and the rails stay as the bootloader
+ * left them; that waits for suspend/power-off work, where a wrong voltage
+ * limit would matter. Single interrupt, MCQ off.
  * This holds the Android installation: test userspace marks every disk
  * read-only as it appears and nothing here may mount it read-write.
  */
@@ -685,5 +693,493 @@
 	mediatek,ufs-pmc-via-fastauto;
 	mediatek,ufs-tx-skew-fix;
 	mediatek,ufs-disable-mcq;
+	resets = <&ufscfg_pdn_rst 0>, <&ufscfg_pdn_rst 1>, <&ufscfg_pdn_rst 2>;
+	reset-names = "unipro_rst", "crypto_rst", "hci_rst";
+	status = "okay";
+};
+
+/*
+ * UART0, clocks as in the stock tree. The board has what looks like a UART
+ * header, but nothing is connected to it yet, so this is only known to probe.
+ * Pins are left as the bootloader muxed them. It is also a kernel console
+ * (921600 8N1), listed before tty0 so the panel stays the primary console.
+ */
+&uart0 {
+	clocks = <&clk26m>, <&pericfg CLK_PERAOP_UART0>;
+	clock-names = "baud", "bus";
+	status = "okay";
+};
+
+/ {
+	aliases {
+		serial0 = &uart0;
+	};
+};
+
+/*
+ * Thermal sensors (LVTS). The bootloader programs the controllers, including
+ * the 119 C hardware reset; the driver only reads them, so the zones are
+ * polled. Only the CPU and SoC domains are described: the GPU and APU sensor
+ * blocks sit in power domains that are off. Calibration falls back to defaults
+ * (about 0.4 C off on this unit) until there is an nvmem provider for the
+ * bootloader's devinfo copy. CPUs throttle from 95 C; the stock tree's only
+ * trip is at the hardware limit.
+ */
+#include <dt-bindings/thermal/mediatek,lvts-thermal.h>
+#include <dt-bindings/thermal/thermal.h>
+
+&soc {
+	lvts_ap: thermal-sensor@10315000 {
+		compatible = "mediatek,mt6897-lvts-ap";
+		reg = <0x0 0x10315000 0x0 0x1000>;
+		interrupts = <GIC_SPI 264 IRQ_TYPE_LEVEL_HIGH 0>;
+		#thermal-sensor-cells = <1>;
+	};
+
+	lvts_mcu: thermal-sensor@10316000 {
+		compatible = "mediatek,mt6897-lvts-mcu";
+		reg = <0x0 0x10316000 0x0 0x1000>;
+		interrupts = <GIC_SPI 265 IRQ_TYPE_LEVEL_HIGH 0>;
+		#thermal-sensor-cells = <1>;
+	};
+};
+
+&cpu0 { #cooling-cells = <2>; };
+&cpu1 { #cooling-cells = <2>; };
+&cpu2 { #cooling-cells = <2>; };
+&cpu3 { #cooling-cells = <2>; };
+&cpu4 { #cooling-cells = <2>; };
+&cpu5 { #cooling-cells = <2>; };
+&cpu6 { #cooling-cells = <2>; };
+&cpu7 { #cooling-cells = <2>; };
+
+/ {
+	thermal-zones {
+		mid4-1-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_MEDIUM_CPU4_0>;
+
+			trips {
+				medium_core4_1_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&medium_core4_1_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		mid4-2-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_MEDIUM_CPU4_1>;
+
+			trips {
+				medium_core4_2_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&medium_core4_2_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		mid5-1-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_MEDIUM_CPU5_0>;
+
+			trips {
+				medium_core5_1_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&medium_core5_1_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		mid5-2-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_MEDIUM_CPU5_1>;
+
+			trips {
+				medium_core5_2_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&medium_core5_2_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		lit2-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_LITTLE_CPU2>;
+
+			trips {
+				little_core2_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&little_core2_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		lit3-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_LITTLE_CPU3>;
+
+			trips {
+				little_core3_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&little_core3_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		mid6-1-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_MEDIUM_CPU6_0>;
+
+			trips {
+				medium_core6_1_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&medium_core6_1_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		mid6-2-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_MEDIUM_CPU6_1>;
+
+			trips {
+				medium_core6_2_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&medium_core6_2_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		dsu1-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_DSU0>;
+
+			trips {
+				dsu1_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&dsu1_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		lit0-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_LITTLE_CPU0>;
+
+			trips {
+				little_core0_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&little_core0_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		lit1-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_LITTLE_CPU1>;
+
+			trips {
+				little_core1_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&little_core1_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		dsu2-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_DSU1>;
+
+			trips {
+				dsu2_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&dsu2_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		big7-1-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_BIG_CPU7_0>;
+
+			trips {
+				big_core7_1_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&big_core7_1_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		big7-2-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_BIG_CPU7_1>;
+
+			trips {
+				big_core7_2_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&big_core7_2_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		dsu3-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_DSU2>;
+
+			trips {
+				dsu3_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&dsu3_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		dsu4-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_mcu MT6897_MCU_DSU3>;
+
+			trips {
+				dsu4_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&dsu4_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		soc-top1-thermal {
+			polling-delay = <2000>;
+			polling-delay-passive = <0>;
+			thermal-sensors = <&lvts_ap MT6897_AP_SOC_TOP0>;
+		};
+
+		soc-bot1-thermal {
+			polling-delay = <2000>;
+			polling-delay-passive = <0>;
+			thermal-sensors = <&lvts_ap MT6897_AP_SOC_BOT0>;
+		};
+	};
+};
+
+/*
+ * SPM power domains (full MT6897 table). Registration reads each domain's
+ * state and writes nothing: domains the bootloader left on are registered
+ * always-on, the rest stay off until a consumer asks. Multimedia sub-block
+ * clocks and the camera/ISP supplies are left out because their providers do
+ * not exist here yet and would defer the whole controller.
+ */
+&soc {
+	ifr_bus: syscon@1002c000 {
+		compatible = "mediatek,mt6897-ifr_bus", "syscon";
+		reg = <0x0 0x1002c000 0x0 0x1000>;
+	};
+
+	vlpcfg_bus: syscon@1c00c000 {
+		compatible = "mediatek,mt6897-vlpcfg_bus", "syscon";
+		reg = <0x0 0x1c00c000 0x0 0x1000>;
+	};
+};
+
+&scpsys {
+	infracfg = <&ifr_bus>;
+	vlpcfg = <&vlpcfg_bus>;
+	hw-voter-regmap = <&hwv>;
+	clocks = <&topckgen CLK_TOP_AUD_INTBUS_SEL>,
+		 <&topckgen CLK_TOP_ADSP_SEL>,
+		 <&topckgen CLK_TOP_IMG1_SEL>,
+		 <&topckgen CLK_TOP_IPE_SEL>,
+		 <&topckgen CLK_TOP_VDEC_SEL>,
+		 <&topckgen CLK_TOP_VENC_SEL>,
+		 <&topckgen CLK_TOP_CAM_SEL>,
+		 <&topckgen CLK_TOP_DPE_SEL>,
+		 <&vlp_cksys CLK_VLP_CK_CCUSYS_SEL>,
+		 <&topckgen CLK_TOP_CCU_AHB_SEL>,
+		 <&topckgen CLK_TOP_MDP0_SEL>,
+		 <&topckgen CLK_TOP_MDP1_SEL>,
+		 <&topckgen CLK_TOP_DISP0_SEL>,
+		 <&topckgen CLK_TOP_DISP1_SEL>,
+		 <&topckgen CLK_TOP_OVL0_SEL>,
+		 <&topckgen CLK_TOP_OVL1_SEL>,
+		 <&topckgen CLK_TOP_MMINFRA_SEL>,
+		 <&topckgen CLK_TOP_MMUP_SEL>;
+	clock-names = "audio", "adsp_ao", "isp", "ipe", "vde", "ven",
+		      "cam", "dpe", "ccu", "ccu_ahb", "mdp", "mdp1",
+		      "disp", "disp1", "ovl", "ovl1", "mm_infra", "mmup";
 	status = "okay";
 };
