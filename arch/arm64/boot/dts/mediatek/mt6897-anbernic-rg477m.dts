@@ -80,7 +80,8 @@
 		 */
 		clocks = <&topckgen CLK_TOP_DISP0_SEL>,
 			 <&topckgen CLK_TOP_OVL0_SEL>,
-			 <&topckgen CLK_TOP_MMINFRA_SEL>;
+			 <&topckgen CLK_TOP_MMINFRA_SEL>,
+			 <&pericfg CLK_PERAOP_DISP_PWM0>;
 	};
 };
 
@@ -1528,5 +1529,40 @@
 	assigned-clocks = <&pericfg CLK_PERAOP_PWM_BSEL>,
 			  <&pericfg CLK_PERAOP_PWM_FB1_SEL>;
 	assigned-clock-parents = <&clk26m>, <&clk26m>;
+	status = "okay";
+};
+
+/*
+ * Backlight PWM. The bootloader leaves it running on GPIO131; the boot
+ * framebuffer holds its clock so that it stays lit whoever else comes and goes.
+ */
+&pio {
+	disp_pwm_pins_default: disp-pwm-default-pins {
+		pins-pwm {
+			pinmux = <0x8301>;
+		};
+	};
+};
+
+/ {
+	/*
+	 * No enable-gpios on purpose: the LED driver's enable is believed to
+	 * share GPIO64 with the panel supply, which must not be switched yet.
+	 */
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&disp_pwm0 0 39385>;
+		brightness-levels = <0 255>;
+		num-interpolated-steps = <255>;
+		default-brightness-level = <51>;
+	};
+};
+
+&disp_pwm0 {
+	clocks = <&pericfg CLK_PERAOP_DISP_PWM0>,
+		 <&topckgen CLK_TOP_DISP_PWM_SEL>;
+	clock-names = "main", "mm";
+	pinctrl-names = "default";
+	pinctrl-0 = <&disp_pwm_pins_default>;
 	status = "okay";
 };
