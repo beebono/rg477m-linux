@@ -11,6 +11,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
@@ -359,6 +360,13 @@ void mtu3_start(struct mtu3 *mtu)
 
 	mtu3_dev_power_on(mtu);
 	mtu3_csr_init(mtu);
+	/*
+	 * "mediatek,force-vbus" (vendor trees): the controller gets no usable
+	 * VBUS-valid signal on this board, so assert it by software whenever
+	 * the device controller is started.
+	 */
+	if (of_property_read_bool(mtu->ssusb->dev->of_node, "mediatek,force-vbus"))
+		mtu3_setbits(mbase, U3D_MISC_CTRL, VBUS_FRC_EN | VBUS_ON);
 	mtu3_set_speed(mtu, mtu->speed);
 
 	/* Initialize the default interrupts */

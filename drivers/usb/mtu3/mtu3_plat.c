@@ -110,6 +110,15 @@ static int ssusb_phy_power_on(struct ssusb_mtk *ssusb)
 		ret = phy_power_on(ssusb->phys[i]);
 		if (ret)
 			goto power_off_phy;
+		/*
+		 * Fixed-role controllers never go through the role switch
+		 * code, so tell the PHY its role here (the xsphy driver
+		 * forces IDDIG from it).
+		 */
+		if (ssusb->dr_mode == USB_DR_MODE_PERIPHERAL)
+			phy_set_mode(ssusb->phys[i], PHY_MODE_USB_DEVICE);
+		else if (ssusb->dr_mode == USB_DR_MODE_HOST)
+			phy_set_mode(ssusb->phys[i], PHY_MODE_USB_HOST);
 	}
 	return 0;
 
