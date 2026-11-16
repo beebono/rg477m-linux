@@ -1633,3 +1633,37 @@
 		};
 	};
 };
+
+/*
+ * Touchscreen: the touch half of the FT8201P panel controller. It only answers
+ * while the panel is powered and initialised. Supply (MT6368 VTP) is always on.
+ */
+&pio {
+	touch_pins_default: touch-default-pins {
+		pins-i2c {
+			pinmux = <0xa301>, <0xa401>;
+		};
+
+		pins-irq {
+			pinmux = <0x0900>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+};
+
+&i2c13 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&touch_pins_default>;
+	status = "okay";
+
+	touchscreen@38 {
+		compatible = "focaltech,ft8201";
+		reg = <0x38>;
+		interrupts-extended = <&pio 9 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&pio 60 GPIO_ACTIVE_LOW>;
+		touchscreen-size-x = <1280>;
+		touchscreen-size-y = <960>;
+	};
+};
