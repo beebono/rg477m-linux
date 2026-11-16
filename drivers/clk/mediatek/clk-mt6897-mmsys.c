@@ -678,19 +678,26 @@ static const struct mtk_clk_desc ovlsys1_config_mcd = {
 	.num_clks = ARRAY_SIZE(ovlsys1_config_clks),
 };
 
+/*
+ * dispsys0_config and ovlsys0_config are bound by mtk-mmsys (routing for
+ * mediatek-drm), which registers this driver for them as a child platform
+ * device by name, like clk-mt8195-vdo0. The clock provider is still added on
+ * the parent's DT node, so <&dispsys0_config ID> references are unchanged.
+ */
+static const struct platform_device_id clk_mt6897_mmsys_id_table[] = {
+	{ .name = "clk-mt6897-dispsys0", .driver_data = (kernel_ulong_t)&dispsys0_config_mcd },
+	{ .name = "clk-mt6897-ovlsys0", .driver_data = (kernel_ulong_t)&ovlsys0_config_mcd },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(platform, clk_mt6897_mmsys_id_table);
+
 static const struct of_device_id of_match_clk_mt6897_mmsys[] = {
 	{
-		.compatible = "mediatek,mt6897-dispsys0_config",
-		.data = &dispsys0_config_mcd,
-	}, {
 		.compatible = "mediatek,mt6897-mmsys1",
 		.data = &dispsys1_config_mcd,
 	}, {
 		.compatible = "mediatek,mt6897-mminfra_config",
 		.data = &mminfra_config_mcd,
-	}, {
-		.compatible = "mediatek,mt6897-ovlsys0_config",
-		.data = &ovlsys0_config_mcd,
 	}, {
 		.compatible = "mediatek,mt6897-ovlsys1_config",
 		.data = &ovlsys1_config_mcd,
@@ -709,7 +716,11 @@ static int clk_mt6897_mmsys_grp_probe(struct platform_device *pdev)
 	pr_notice("%s: %s init begin\n", __func__, pdev->name);
 #endif
 
-	r = mtk_clk_simple_probe(pdev);
+	/* Child of mtk-mmsys: the provider lives on the parent's node */
+	if (!pdev->dev.of_node && pdev->dev.parent && pdev->dev.parent->of_node)
+		r = mtk_clk_pdev_probe(pdev);
+	else
+		r = mtk_clk_simple_probe(pdev);
 	if (r)
 		dev_err(&pdev->dev,
 			"could not register clock provider: %s: %d\n",
@@ -724,6 +735,7 @@ static int clk_mt6897_mmsys_grp_probe(struct platform_device *pdev)
 
 static struct platform_driver clk_mt6897_mmsys_drv = {
 	.probe = clk_mt6897_mmsys_grp_probe,
+	.id_table = clk_mt6897_mmsys_id_table,
 	.driver = {
 		.name = "clk-mt6897-mmsys",
 		.of_match_table = of_match_clk_mt6897_mmsys,
