@@ -854,19 +854,82 @@ void tb_wdt_disable(void);
 /* ================= TB375FC bring-up canary =================
  * 见 tools/patch_boot_canary.py 顶部说明。
  */
-#define TB_FB_PHYS    0xfc16f000UL
-#define TB_FB_STRIDE  11776
-#define TB_FB_W       2944
-#define TB_FB_Y       860          /* 屏幕中部，比底部更容易被看到 */
-#define TB_FB_H       220
-#define TB_BLK_W      200
-#define TB_BLK_GAP    40
+/*
+ * Canary geometry is taken from the simple-framebuffer node of the embedded
+ * board DTB, so the same code serves every board (TB375FC: 2944x1840 at
+ * 0xfc16f000; RG477M: 1280x960 at 0xff1ef000). 12 blocks plus gaps span the
+ * width; the band sits in the vertical middle of the screen.
+ */
+extern char __embedded_dtb_start[];
+extern char __embedded_dtb_end[];
+
+static unsigned long tb_fb_phys, tb_fb_stride, tb_fb_w, tb_fb_y, tb_fb_h;
+static unsigned long tb_blk_w, tb_blk_gap;
+static unsigned int tb_hold_ms = 80;
+#define TB_FB_PHYS    tb_fb_phys
+#define TB_FB_STRIDE  tb_fb_stride
+#define TB_FB_W       tb_fb_w
+#define TB_FB_Y       tb_fb_y
+#define TB_FB_H       tb_fb_h
+#define TB_BLK_W      tb_blk_w
+#define TB_BLK_GAP    tb_blk_gap
 #define TB_MAXBLK     12
-#define TB_HOLD_MS    300
-/* ★ early_memremap 单次有上限（fixmap 槽位，约 128KB，实测 20MB 直接返回 NULL）。
-   之前就是映射 20MB 失败，探针一个像素都没画出来。
-   所以分块：每次只映射 4 行 = 11776*4 = 47KB。 */
+#define TB_HOLD_MS    tb_hold_ms
+/* early_ioremap is limited to a few fixmap slots (about 128 KB), so map 4 rows at a time. */
 #define TB_CHUNK_ROWS 4
+
+static bool tb_board_is_tb375fc(void)
+{
+	return !fdt_node_check_compatible(__embedded_dtb_start, 0, "lenovo,tb375fc");
+}
+
+/* Returns false (and the canary stays silent) if the embedded DTB has no usable framebuffer. */
+static bool __init tb_fb_setup(void)
+{
+	static int state;	/* 0 = not tried, 1 = ok, -1 = unusable */
+	const void *fdt = __embedded_dtb_start;
+	const fdt32_t *reg, *p;
+	u32 width, height, stride;
+	int node, len;
+
+	if (state)
+		return state > 0;
+	state = -1;
+	if (fdt_check_header(fdt))
+		return false;
+	node = fdt_node_offset_by_compatible(fdt, -1, "simple-framebuffer");
+	if (node < 0)
+		return false;
+	reg = fdt_getprop(fdt, node, "reg", &len);
+	if (!reg || len < 16)			/* root is #address-cells = #size-cells = 2 */
+		return false;
+	p = fdt_getprop(fdt, node, "width", &len);
+	if (!p || len != 4)
+		return false;
+	width = fdt32_to_cpu(*p);
+	p = fdt_getprop(fdt, node, "height", &len);
+	if (!p || len != 4)
+		return false;
+	height = fdt32_to_cpu(*p);
+	p = fdt_getprop(fdt, node, "stride", &len);
+	if (!p || len != 4)
+		return false;
+	stride = fdt32_to_cpu(*p);
+	if (!width || !height || stride < width * 4)
+		return false;
+
+	tb_fb_phys = ((u64)fdt32_to_cpu(reg[0]) << 32) | fdt32_to_cpu(reg[1]);
+	tb_fb_stride = stride;
+	tb_fb_w = width;
+	tb_fb_h = height / 8;
+	tb_fb_y = (height - tb_fb_h) / 2;
+	tb_blk_w = width / 15;
+	tb_blk_gap = tb_blk_w / 5;
+	if (tb_board_is_tb375fc())
+		tb_hold_ms = 300;
+	state = 1;
+	return true;
+}
 
 /* MTK RGU 看门狗（厂商 DTB: watchdog@1c00a000）
  * 关狗 = 写 WDT_MODE = KEY(0x22000000) 且 ENABLE(bit0)=0 */
@@ -905,7 +968,7 @@ static void __init tb_draw(int n)
 	int y, x, k, r, rows;
 	unsigned long bytes;
 
-	if (!tb_canary_active)
+	if (!tb_canary_active || !tb_fb_setup())
 		return;
 
 	for (y = 0; y < TB_FB_H; y += TB_CHUNK_ROWS) {
@@ -964,7 +1027,17 @@ void __init tb_canary_solid(void)
 
 void __init tb_wdt_disable(void)
 {
-	void __iomem *rgu = early_ioremap(TB_RGU_PHYS, 0x100);
+	void __iomem *rgu;
+
+	/*
+	 * Only the TB375FC switches the bootloader's watchdog off. On the RG477M it
+	 * is left armed on purpose: a kernel that hangs is then reset without anyone
+	 * touching the device, and the A/B retry counter falls back to the good slot.
+	 */
+	if (!tb_board_is_tb375fc())
+		return;
+
+	rgu = early_ioremap(TB_RGU_PHYS, 0x100);
 
 	if (rgu) {
 		writel(TB_WDT_KEY, rgu + TB_WDT_MODE);   /* KEY + ENABLE=0 => 关狗 */
@@ -972,6 +1045,65 @@ void __init tb_wdt_disable(void)
 	}
 }
 /* --- TB-CANARY-END --- */
+
+/*
+ * The bootloader (LK) adds ~40 "mblock-*" nodes to /reserved-memory of the FDT
+ * it hands over: ATF, TEE, hypervisor, co-processor firmware, its framebuffer,
+ * pstore and so on, at addresses it computes for this unit's RAM size. Since we
+ * replace that FDT with the embedded one, carry those reservations over here
+ * instead of hardcoding a copy in the board DTS.
+ *
+ * "no-map" regions are kept out of the linear map, as LK asked. LK's framebuffer
+ * is treated the same way so that simple-framebuffer can ioremap() it.
+ * Nodes without a "reg" (dynamically sized pools for vendor drivers) are skipped.
+ */
+static void __init embedded_dtb_import_lk_reserved_mem(const void *fdt)
+{
+	int parent, node, len, count = 0;
+	const fdt32_t *cells;
+
+	if (!fdt || fdt_check_header(fdt))
+		return;
+	parent = fdt_path_offset(fdt, "/reserved-memory");
+	if (parent < 0) {
+		pr_warn("LK-RESMEM: bootloader FDT has no /reserved-memory\n");
+		return;
+	}
+	cells = fdt_getprop(fdt, parent, "#address-cells", &len);
+	if (!cells || len != 4 || fdt32_to_cpu(*cells) != 2)
+		goto bad_cells;
+	cells = fdt_getprop(fdt, parent, "#size-cells", &len);
+	if (!cells || len != 4 || fdt32_to_cpu(*cells) != 2)
+		goto bad_cells;
+
+	fdt_for_each_subnode(node, fdt, parent) {
+		const fdt32_t *reg = fdt_getprop(fdt, node, "reg", &len);
+		const char *name = fdt_get_name(fdt, node, NULL);
+		phys_addr_t base, size;
+		bool nomap;
+
+		if (!reg || len < 16)
+			continue;
+		base = ((u64)fdt32_to_cpu(reg[0]) << 32) | fdt32_to_cpu(reg[1]);
+		size = ((u64)fdt32_to_cpu(reg[2]) << 32) | fdt32_to_cpu(reg[3]);
+		if (!size)
+			continue;
+		nomap = fdt_getprop(fdt, node, "no-map", NULL) ||
+			!fdt_node_check_compatible(fdt, node, "mediatek,framebuffer");
+		if (nomap)
+			memblock_mark_nomap(base, size);
+		else
+			memblock_reserve(base, size);
+		pr_info("LK-RESMEM: %pa + %pa %s %s\n", &base, &size,
+			nomap ? "nomap  " : "reserve", name ? name : "?");
+		count++;
+	}
+	pr_info("LK-RESMEM: carried over %d bootloader regions\n", count);
+	return;
+
+bad_cells:
+	pr_warn("LK-RESMEM: unexpected cell sizes in bootloader /reserved-memory, nothing imported\n");
+}
 
 void __init __no_sanitize_address setup_arch(char **cmdline_p)
 {
@@ -1007,14 +1139,12 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	 * region, paging_init() will exclude it from the direct map, and
 	 * unflatten_device_tree() builds the driver tree from ours.
 	 */
-	extern char _binary_arch_arm64_boot_dts_mediatek_mt6897_lenovo_tb375fc_dtb_start[];
-	extern char _binary_arch_arm64_boot_dts_mediatek_mt6897_lenovo_tb375fc_dtb_end[];
 	if (acpi_disabled) {
-		pr_info("XAGA-DTB: overriding LK FDT with embedded "
-			"mt6897-lenovo-tb375fc.dtb (%d bytes)\n",
-			(int)(_binary_arch_arm64_boot_dts_mediatek_mt6897_lenovo_tb375fc_dtb_end -
-			      _binary_arch_arm64_boot_dts_mediatek_mt6897_lenovo_tb375fc_dtb_start));
-		initial_boot_params = _binary_arch_arm64_boot_dts_mediatek_mt6897_lenovo_tb375fc_dtb_start;
+		/* Must run while initial_boot_params still points at the bootloader's FDT. */
+		embedded_dtb_import_lk_reserved_mem(initial_boot_params);
+		pr_info("XAGA-DTB: overriding LK FDT with embedded board DTB (%d bytes)\n",
+			(int)(__embedded_dtb_end - __embedded_dtb_start));
+		initial_boot_params = __embedded_dtb_start;
 
 		/*
 		 * LK's cmdline was already captured by setup_machine_fdt()

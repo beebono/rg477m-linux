@@ -77,18 +77,15 @@ obj-$(CONFIG_COMPAT_VDSO)		+= vdso32-wrap.o
 $(obj)/vdso-wrap.o: $(obj)/vdso/vdso.so
 $(obj)/vdso32-wrap.o: $(obj)/vdso32/vdso.so
 
-# XAGA: embed the board DTB into the kernel image so setup.c can override
-# LK's FDT with our own device tree. Keep it in .rodata (not the
-# .dtb.init.rodata section) so initial_boot_params stays valid after boot.
-obj-$(CONFIG_OF) += xaga-dtb.o
-# Build the board DTB through the normal DT build machinery before wrapping it.
-# TB375FC: 改用本机 DTB（在 objtree，由 make dtbs 先产出）。
-# 必须相对路径，objcopy 生成的符号才是
-#   _binary_arch_arm64_boot_dts_mediatek_mt6897_lenovo_tb375fc_dtb_start
-$(obj)/xaga-dtb.o: arch/arm64/boot/dts/mediatek/mt6897-lenovo-tb375fc.dtb FORCE
-	$(call if_changed,objcopy)
-OBJCOPYFLAGS_xaga-dtb.o := -I binary -O elf64-littleaarch64 -B aarch64 \
-	--rename-section .data=.rodata,alloc,readonly
+# Embed a board DTB into the kernel image so setup.c can replace the FDT the
+# MediaTek bootloader hands over (its Android tree) with our own. The board is
+# chosen by CONFIG_ARM64_EMBEDDED_DTB (path below arch/arm64/boot/dts, without
+# ".dtb"). It lives in .rodata, not .dtb.init.rodata, so initial_boot_params
+# stays valid after boot. Run "make dtbs" first: the DTB must already exist.
+EMBEDDED_DTB := arch/arm64/boot/dts/$(patsubst "%",%,$(CONFIG_ARM64_EMBEDDED_DTB)).dtb
+obj-$(CONFIG_OF) += embedded-dtb.o
+AFLAGS_embedded-dtb.o := -DEMBEDDED_DTB_FILE='"$(EMBEDDED_DTB)"'
+$(obj)/embedded-dtb.o: $(EMBEDDED_DTB)
 
 obj-y					+= probes/
 obj-y					+= head.o

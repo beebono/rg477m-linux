@@ -2430,6 +2430,15 @@ config ARM64_ACPI_PARKING_PROTOCOL
 	  protocol even if the corresponding data is present in the ACPI
 	  MADT table.
 
+config ARM64_EMBEDDED_DTB
+	string "Board DTB embedded in the kernel image"
+	default "mediatek/mt6897-lenovo-tb375fc"
+	help
+	  Path, below arch/arm64/boot/dts and without the ".dtb" suffix, of the
+	  board device tree built into the kernel. Early boot code switches to
+	  it in place of the FDT passed by the MediaTek bootloader, after
+	  taking memory, initrd and reserved-memory information from that FDT.
+
 config CMDLINE
 	string "Default kernel command string"
 	default ""
