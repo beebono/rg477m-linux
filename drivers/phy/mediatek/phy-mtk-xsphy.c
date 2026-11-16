@@ -8,6 +8,7 @@
  */
 
 #include <dt-bindings/phy/phy.h>
+#include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/iopoll.h>
@@ -47,6 +48,7 @@
 #define P2F_USB_FM_VALID	BIT(0)
 
 #define XSP_USBPHYACR0	((SSUSB_SIFSLV_U2PHY_COM) + 0x00)
+#define P2A0_RG_USB20_TX_PH_ROT_SEL	GENMASK(26, 24)
 #define P2A0_RG_INTR_EN	BIT(5)
 
 #define XSP_USBPHYACR1		((SSUSB_SIFSLV_U2PHY_COM) + 0x04)
@@ -59,10 +61,38 @@
 #define P2A5_RG_HSTX_SRCTRL		GENMASK(14, 12)
 
 #define XSP_USBPHYACR6		((SSUSB_SIFSLV_U2PHY_COM) + 0x018)
+#define P2A6_RG_U2_PHY_REV6	GENMASK(31, 30)
+#define P2A6_RG_U2_PHY_REV1	BIT(25)
 #define P2A6_RG_BC11_SW_EN	BIT(23)
 #define P2A6_RG_OTG_VBUSCMP_EN	BIT(20)
 
+#define XSP_USBPHYACR4		((SSUSB_SIFSLV_U2PHY_COM) + 0x020)
+#define P2A4_RG_USB20_GPIO_CTL	BIT(9)
+#define P2A4_USB20_GPIO_MODE	BIT(8)
+#define P2A4_U2_GPIO_CTR_MSK	(P2A4_RG_USB20_GPIO_CTL | P2A4_USB20_GPIO_MODE)
+
+#define XSP_U2PHYDTM0		((SSUSB_SIFSLV_U2PHY_COM) + 0x068)
+#define P2D_FORCE_UART_EN	BIT(26)
+#define P2D_FORCE_DATAIN	BIT(23)
+#define P2D_FORCE_DM_PULLDOWN	BIT(21)
+#define P2D_FORCE_DP_PULLDOWN	BIT(20)
+#define P2D_FORCE_XCVRSEL	BIT(19)
+#define P2D_FORCE_SUSPENDM	BIT(18)
+#define P2D_FORCE_TERMSEL	BIT(17)
+#define P2D_RG_DATAIN		GENMASK(13, 10)
+#define P2D_RG_DMPULLDOWN	BIT(7)
+#define P2D_RG_DPPULLDOWN	BIT(6)
+#define P2D_RG_XCVRSEL		GENMASK(5, 4)
+#define P2D_RG_SUSPENDM		BIT(3)
+#define P2D_RG_TERMSEL		BIT(2)
+#define P2D_DTM0_PART_MASK \
+	(P2D_FORCE_DATAIN | P2D_FORCE_DM_PULLDOWN | \
+	 P2D_FORCE_DP_PULLDOWN | P2D_FORCE_XCVRSEL | \
+	 P2D_FORCE_SUSPENDM | P2D_FORCE_TERMSEL | P2D_RG_DMPULLDOWN | \
+	 P2D_RG_DPPULLDOWN | P2D_RG_TERMSEL)
+
 #define XSP_U2PHYDTM1		((SSUSB_SIFSLV_U2PHY_COM) + 0x06C)
+#define P2D_RG_UART_EN		BIT(16)
 #define P2D_FORCE_IDDIG		BIT(9)
 #define P2D_RG_VBUSVALID	BIT(5)
 #define P2D_RG_SESSEND		BIT(4)
@@ -193,11 +223,48 @@ static void u2_phy_instance_power_on(struct mtk_xsphy *xsphy,
 	void __iomem *pbase = inst->port_base;
 	u32 index = inst->index;
 
+	dev_info(xsphy->dev, "u2 phy before power on: DTM0 %08x DTM1 %08x ACR4 %08x ACR6 %08x\n",
+		 readl(pbase + XSP_U2PHYDTM0), readl(pbase + XSP_U2PHYDTM1),
+		 readl(pbase + XSP_USBPHYACR4), readl(pbase + XSP_USBPHYACR6));
+
+	/*
+	 * The bootloader leaves the port in the vendor driver's power-off
+	 * state (forced suspend, transceiver and termination overrides, and
+	 * possibly the pads switched to UART or GPIO). Undo that the way the
+	 * vendor power-on sequence does.
+	 */
+	mtk_phy_set_bits(pbase + XSP_U2PHYDTM0, P2D_FORCE_SUSPENDM);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_RG_SUSPENDM);
+	mtk_phy_set_bits(pbase + XSP_U2PHYDTM0, P2D_RG_SUSPENDM);
+	udelay(30);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_FORCE_SUSPENDM);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_RG_SUSPENDM);
+
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_FORCE_UART_EN);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM1, P2D_RG_UART_EN);
+	mtk_phy_clear_bits(pbase + XSP_USBPHYACR4, P2A4_U2_GPIO_CTR_MSK);
+
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0,
+			   P2D_RG_XCVRSEL | P2D_RG_DATAIN | P2D_DTM0_PART_MASK);
+
+	mtk_phy_clear_bits(pbase + XSP_USBPHYACR6, P2A6_RG_BC11_SW_EN);
+
 	mtk_phy_set_bits(pbase + XSP_USBPHYACR6, P2A6_RG_OTG_VBUSCMP_EN);
 
 	mtk_phy_update_bits(pbase + XSP_U2PHYDTM1,
 			    P2D_RG_VBUSVALID | P2D_RG_AVALID | P2D_RG_SESSEND,
 			    P2D_RG_VBUSVALID | P2D_RG_AVALID);
+
+	mtk_phy_clear_bits(pbase + XSP_USBPHYACR0, P2A0_RG_USB20_TX_PH_ROT_SEL);
+
+	mtk_phy_update_bits(pbase + XSP_USBPHYACR6,
+			    P2A6_RG_U2_PHY_REV6 | P2A6_RG_U2_PHY_REV1,
+			    FIELD_PREP(P2A6_RG_U2_PHY_REV6, 1));
+	udelay(800);
+
+	dev_info(xsphy->dev, "u2 phy after power on: DTM0 %08x DTM1 %08x ACR4 %08x ACR6 %08x\n",
+		 readl(pbase + XSP_U2PHYDTM0), readl(pbase + XSP_U2PHYDTM1),
+		 readl(pbase + XSP_USBPHYACR4), readl(pbase + XSP_USBPHYACR6));
 
 	dev_dbg(xsphy->dev, "%s(%d)\n", __func__, index);
 }
