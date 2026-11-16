@@ -652,3 +652,38 @@
 	};
 };
 
+/*
+ * UFS, first pass: clocks as in the stock tree, but no supplies and no reset
+ * lines, so the kernel cannot power-cycle or hard-reset the device and the
+ * rails stay as the bootloader left them. Single interrupt, MCQ off.
+ * This holds the Android installation: test userspace marks every disk
+ * read-only as it appears and nothing here may mount it read-write.
+ */
+&ufsphy {
+	status = "okay";
+};
+
+&ufshci {
+	clocks = <&topckgen CLK_TOP_U_SEL>,
+		 <&topckgen CLK_TOP_MAINPLL_D4_D2>,
+		 <&topckgen CLK_TOP_MMPLL_D6>,
+		 <&topckgen CLK_TOP_AES_UFSFDE_SEL>,
+		 <&topckgen CLK_TOP_UNIVPLL_D6>,
+		 <&topckgen CLK_TOP_MAINPLL_D4>,
+		 <&ufscfg_ao CLK_UFSCFG_AO_UNIPRO_TX_SYMBOLCLK>,
+		 <&ufscfg_ao CLK_UFSCFG_AO_UNIPRO_RX_SYMBOLCLK0>,
+		 <&ufscfg_ao CLK_UFSCFG_AO_UNIPRO_RX_SYMBOLCLK1>,
+		 <&ufscfg_ao CLK_UFSCFG_AO_UNIPRO_SYSCLK>,
+		 <&ufscfg_pdn CLK_UFSCFG_UFSHCI_UFS>,
+		 <&ufscfg_pdn CLK_UFSCFG_UFSHCI_AES>;
+	clock-names = "ufs_sel", "ufs_sel_min_src", "ufs_sel_max_src",
+		      "ufs_fde", "ufs_fde_min_src", "ufs_fde_max_src",
+		      "unipro_tx_sym", "unipro_rx_sym0", "unipro_rx_sym1",
+		      "unipro_sysclk", "ufshci_ufs", "ufshci_aes";
+	freq-table-hz = <273000000 458333313>, <0 0>, <0 0>, <0 0>, <0 0>,
+			<0 0>, <0 0>, <0 0>, <0 0>, <0 0>, <0 0>, <0 0>;
+	mediatek,ufs-pmc-via-fastauto;
+	mediatek,ufs-tx-skew-fix;
+	mediatek,ufs-disable-mcq;
+	status = "okay";
+};
