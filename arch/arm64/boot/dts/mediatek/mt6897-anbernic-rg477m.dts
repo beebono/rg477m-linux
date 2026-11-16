@@ -71,6 +71,16 @@
 		height = <960>;
 		stride = <5120>;
 		format = "a8r8g8b8";
+		/*
+		 * The bootloader's pipeline runs from mmpll (disp0, ovl0 and
+		 * mminfra all select mmpll_d4). Hold those here: UFS borrows
+		 * mmpll_d6 during bring-up, and when it lets go the PLL would
+		 * otherwise be switched off under the panel (seen as the
+		 * console going black at SCSI attach).
+		 */
+		clocks = <&topckgen CLK_TOP_DISP0_SEL>,
+			 <&topckgen CLK_TOP_OVL0_SEL>,
+			 <&topckgen CLK_TOP_MMINFRA_SEL>;
 	};
 };
 
