@@ -1127,6 +1127,13 @@ config COMMON_CLK_MT6897_BUS
 	help
 	  This driver supports MediaTek MT6897 infracfg_ao clock gates.
 
+config COMMON_CLK_MT6897_MMSYS
+	tristate "Clock driver for MediaTek MT6897 display/mminfra clocks"
+	depends on COMMON_CLK_MT6897
+	help
+	  This driver supports MediaTek MT6897 dispsys0/dispsys1,
+	  ovlsys0/ovlsys1 and mminfra_config clock gates.
+
 config COMMON_CLK_MT6897_PERI
 	tristate "Clock driver for MediaTek MT6897 peripheral clocks"
 	depends on COMMON_CLK_MT6897

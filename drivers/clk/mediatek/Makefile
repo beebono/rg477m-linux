@@ -171,6 +171,7 @@ obj-$(CONFIG_COMMON_CLK_MT6895_AFE) += clk-mt6895-afe.o
 obj-$(CONFIG_COMMON_CLK_MT6895_PERI_AO) += clk-mt6895-peri-ao.o
 obj-$(CONFIG_COMMON_CLK_MT6897) += clk-mt6897.o
 obj-$(CONFIG_COMMON_CLK_MT6897_BUS) += clk-mt6897-bus.o
+obj-$(CONFIG_COMMON_CLK_MT6897_MMSYS) += clk-mt6897-mmsys.o
 obj-$(CONFIG_COMMON_CLK_MT6897_PERI) += clk-mt6897-peri.o
 obj-$(CONFIG_COMMON_CLK_MT6897_VLP) += clk-mt6897-vlp.o
 obj-$(CONFIG_COMMON_CLK_MT8365) += clk-mt8365-apmixedsys.o clk-mt8365.o
