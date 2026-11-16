@@ -592,6 +592,9 @@ static int mtk_spmi_pmic_probe(struct spmi_device *sdev)
 		 * cells against a dead interrupt chain leaves children
 		 * (accdet) permanently without their IRQs.
 		 */
+		if (core->irq == -EPROBE_DEFER)
+			return dev_err_probe(&sdev->dev, core->irq,
+					     "PMIC irq parent not ready\n");
 		if (core->irq <= 0) {  /* irq 0 = 无中断域(轮询模式)，同样走降级 */
 			/*
 			 * xaga: pinctrl-EINT 尚未移植，暂时没有中断域。
@@ -605,9 +608,6 @@ static int mtk_spmi_pmic_probe(struct spmi_device *sdev)
 			core->irq_domain = NULL;
 			return devm_of_platform_populate(&sdev->dev);
 		}
-		return dev_err_probe(&sdev->dev, core->irq,
-				     "PMIC irq parent not ready\n");
-
 		ret = mtk_spmi_pmic_irq_init(core);
 		if (ret)
 			return dev_err_probe(&sdev->dev, ret,

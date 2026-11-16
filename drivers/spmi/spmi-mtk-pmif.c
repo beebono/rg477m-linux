@@ -587,7 +587,9 @@ static int mtk_spmi_rcs_irq_translate(struct irq_domain *d, struct irq_fwspec *f
 	 * hence that must be read from the SPMI device's registers.
 	 */
 	*out_hwirq = intspec[0];
-	*out_type = intspec[2] & IRQ_TYPE_SENSE_MASK;
+	/* One-cell specifiers (vendor-style trees) carry only the slave ID. */
+	*out_type = fwspec->param_count >= 3 ?
+		    intspec[2] & IRQ_TYPE_SENSE_MASK : IRQ_TYPE_LEVEL_HIGH;
 
 	if (pbus->irq_min_sid > intspec[0])
 		pbus->irq_min_sid = intspec[0];
