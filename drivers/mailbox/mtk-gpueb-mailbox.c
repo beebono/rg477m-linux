@@ -19,6 +19,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 
+/* Control register layout of the GPUEB (MT8196, MT6897) */
 #define GPUEB_MBOX_CTL_TX_STS		0x00
 #define GPUEB_MBOX_CTL_IRQ_SET		0x04
 #define GPUEB_MBOX_CTL_IRQ_CLR		0x74
@@ -38,12 +39,15 @@ struct mtk_gpueb_mbox {
 	struct mtk_gpueb_mbox_chan *ch;
 	int irq;
 	const struct mtk_gpueb_mbox_variant *v;
+	/* control register offsets, from the variant */
+	u16 tx_sts, irq_set, irq_clr, rx_sts;
 };
 
 /**
  * struct mtk_gpueb_mbox_chan - per-channel runtime data
  * @ebm: pointer to the parent &struct mtk_gpueb_mbox mailbox
  * @full_name: descriptive name of channel for IRQ subsystem
+ * @irq: interrupt of this channel (shared by all channels on some SoCs)
  * @num: channel number, starting at 0
  * @rx_status: signifies whether channel reception is turned off, or full
  * @c: pointer to the constant &struct mtk_gpueb_mbox_chan_desc channel data
@@ -51,6 +55,7 @@ struct mtk_gpueb_mbox {
 struct mtk_gpueb_mbox_chan {
 	struct mtk_gpueb_mbox *ebm;
 	char *full_name;
+	int irq;
 	u8 num;
 	atomic_t rx_status;
 	const struct mtk_gpueb_mbox_chan_desc *c;
@@ -78,11 +83,22 @@ struct mtk_gpueb_mbox_chan_desc {
  * struct mtk_gpueb_mbox_variant - per-SoC mailbox description
  * @clk_optional: the EB clock is not described on this SoC; on MT6897 the
  *                bootloader starts the GPUEB and the AP never gates its clock
+ * @irq_per_channel: one interrupt line per channel (index == channel)
+ *                   instead of one shared line
+ * @ctl_tx_sts: send status register, bit per channel (offset in "ctl")
+ * @ctl_irq_set: write a bit to signal the remote processor
+ * @ctl_irq_clr: write a bit to acknowledge a received message
+ * @ctl_rx_sts: receive status register, bit per channel
  * @num_channels: number of entries in @channels
  * @channels: channel layout, index == hardware IRQ bit
  */
 struct mtk_gpueb_mbox_variant {
 	const bool clk_optional;
+	const bool irq_per_channel;
+	const u16 ctl_tx_sts;
+	const u16 ctl_irq_set;
+	const u16 ctl_irq_clr;
+	const u16 ctl_rx_sts;
 	const u8 num_channels;
 	const struct mtk_gpueb_mbox_chan_desc channels[] __counted_by(num_channels);
 };
@@ -102,7 +118,7 @@ static irqreturn_t mtk_gpueb_mbox_isr(int irq, void *data)
 	struct mtk_gpueb_mbox_chan *ch = data;
 	u32 rx_sts;
 
-	rx_sts = readl(ch->ebm->mbox_ctl + GPUEB_MBOX_CTL_RX_STS);
+	rx_sts = readl(ch->ebm->mbox_ctl + ch->ebm->rx_sts);
 
 	if (rx_sts & BIT(ch->num)) {
 		if (!atomic_cmpxchg(&ch->rx_status, 0, GPUEB_MBOX_FULL | GPUEB_MBOX_BLOCKED))
@@ -123,7 +139,7 @@ static irqreturn_t mtk_gpueb_mbox_thread(int irq, void *data)
 		u8 buf[GPUEB_MBOX_MAX_RX_SIZE] = {};
 
 		mtk_gpueb_mbox_read_rx(buf, ch);
-		writel(BIT(ch->num), ch->ebm->mbox_ctl + GPUEB_MBOX_CTL_IRQ_CLR);
+		writel(BIT(ch->num), ch->ebm->mbox_ctl + ch->ebm->irq_clr);
 		mbox_chan_received_data(&ch->ebm->mbox.chans[ch->num], buf);
 		atomic_set(&ch->rx_status, 0);
 		return IRQ_HANDLED;
@@ -150,7 +166,7 @@ static int mtk_gpueb_mbox_send_data(struct mbox_chan *chan, void *data)
 	for (i = 0; i < ch->c->tx_len; i += 4)
 		writel(values[i / 4], ch->ebm->mbox_mmio + ch->c->tx_offset + i);
 
-	writel(BIT(ch->num), ch->ebm->mbox_ctl + GPUEB_MBOX_CTL_IRQ_SET);
+	writel(BIT(ch->num), ch->ebm->mbox_ctl + ch->ebm->irq_set);
 
 	return 0;
 }
@@ -169,9 +185,9 @@ static int mtk_gpueb_mbox_startup(struct mbox_chan *chan)
 		goto err_block;
 	}
 
-	writel(BIT(ch->num), ch->ebm->mbox_ctl + GPUEB_MBOX_CTL_IRQ_CLR);
+	writel(BIT(ch->num), ch->ebm->mbox_ctl + ch->ebm->irq_clr);
 
-	ret = devm_request_threaded_irq(ch->ebm->dev, ch->ebm->irq, mtk_gpueb_mbox_isr,
+	ret = devm_request_threaded_irq(ch->ebm->dev, ch->irq, mtk_gpueb_mbox_isr,
 					mtk_gpueb_mbox_thread, IRQF_SHARED | IRQF_ONESHOT,
 					ch->full_name, ch);
 	if (ret) {
@@ -196,7 +212,7 @@ static void mtk_gpueb_mbox_shutdown(struct mbox_chan *chan)
 
 	atomic_set(&ch->rx_status, GPUEB_MBOX_BLOCKED);
 
-	devm_free_irq(ch->ebm->dev, ch->ebm->irq, ch);
+	devm_free_irq(ch->ebm->dev, ch->irq, ch);
 
 	clk_disable(ch->ebm->clk);
 }
@@ -205,7 +221,7 @@ static bool mtk_gpueb_mbox_last_tx_done(struct mbox_chan *chan)
 {
 	struct mtk_gpueb_mbox_chan *ch = chan->con_priv;
 
-	return !(readl(ch->ebm->mbox_ctl + GPUEB_MBOX_CTL_TX_STS) & BIT(ch->num));
+	return !(readl(ch->ebm->mbox_ctl + ch->ebm->tx_sts) & BIT(ch->num));
 }
 
 static const struct mbox_chan_ops mtk_gpueb_mbox_ops = {
@@ -227,6 +243,11 @@ static int mtk_gpueb_mbox_probe(struct platform_device *pdev)
 
 	ebm->dev = &pdev->dev;
 	ebm->v = of_device_get_match_data(ebm->dev);
+
+	ebm->tx_sts = ebm->v->ctl_tx_sts;
+	ebm->irq_set = ebm->v->ctl_irq_set;
+	ebm->irq_clr = ebm->v->ctl_irq_clr;
+	ebm->rx_sts = ebm->v->ctl_rx_sts;
 
 	ebm->irq = platform_get_irq(pdev, 0);
 	if (ebm->irq < 0)
@@ -276,6 +297,13 @@ static int mtk_gpueb_mbox_probe(struct platform_device *pdev)
 
 		ch->ebm = ebm;
 		ch->num = i;
+		if (ebm->v->irq_per_channel) {
+			ch->irq = platform_get_irq(pdev, i);
+			if (ch->irq < 0)
+				return ch->irq;
+		} else {
+			ch->irq = ebm->irq;
+		}
 		spin_lock_init(&ebm->mbox.chans[i].lock);
 		ebm->mbox.chans[i].con_priv = ch;
 		atomic_set(&ch->rx_status, GPUEB_MBOX_BLOCKED);
@@ -292,7 +320,14 @@ static int mtk_gpueb_mbox_probe(struct platform_device *pdev)
 	return devm_mbox_controller_register(ebm->dev, &ebm->mbox);
 }
 
+#define GPUEB_CTL_LAYOUT					\
+	.ctl_tx_sts = GPUEB_MBOX_CTL_TX_STS,			\
+	.ctl_irq_set = GPUEB_MBOX_CTL_IRQ_SET,			\
+	.ctl_irq_clr = GPUEB_MBOX_CTL_IRQ_CLR,			\
+	.ctl_rx_sts = GPUEB_MBOX_CTL_RX_STS
+
 static const struct mtk_gpueb_mbox_variant mtk_gpueb_mbox_mt8196 = {
+	GPUEB_CTL_LAYOUT,
 	.num_channels = 12,
 	.channels = {
 		{ "fast-dvfs-event", 0, 0x0000, 16, 0x00e0, 16 },
@@ -323,6 +358,7 @@ static const struct mtk_gpueb_mbox_variant mtk_gpueb_mbox_mt8196 = {
  * and there is no "ppb" channel, so every receive offset is 8 bytes lower.
  */
 static const struct mtk_gpueb_mbox_variant mtk_gpueb_mbox_mt6897 = {
+	GPUEB_CTL_LAYOUT,
 	.clk_optional = true,
 	.num_channels = 11,
 	.channels = {
@@ -340,7 +376,60 @@ static const struct mtk_gpueb_mbox_variant mtk_gpueb_mbox_mt6897 = {
 	},
 };
 
+/*
+ * MT6897 MCUPM (the MCU power manager: CPU DVFS and CPU/cluster power
+ * states). Same tinysys protocol, different layout, from the vendor
+ * mcupm.ko (tables mcupm_mbox_table / _pin_send / _pin_recv) and the
+ * vendor DT node mcupm@c070000:
+ *
+ *  - 16 mailboxes of 0x28 slots (0xa0 bytes) at "data" + i * 0xa0, one
+ *    send and one receive pin each; pin i lives in mailbox i and uses
+ *    bit i of the four shared control registers (mailboxes 1-15 reuse
+ *    mailbox 0's set/clr/send/recv registers, mtk_smem_init() calls);
+ *  - send pin at slot 0, receive pin at slot 20 (0x50); sizes in words
+ *    from the pin tables (receive pins answer with 1 or 4 words);
+ *  - control: send status 0x00, set 0x04, recv status 0x10, clear 0x18
+ *    (reg-names mbox0_send/set/recv/clr);
+ *  - one interrupt per mailbox (SPI 48 + i).
+ *
+ * Channel 0's send length is the 3 words the vendor sends (its pin allows
+ * 4). Mailbox 3's memory (0x0C0BF7E0-0x0C0BF87F) holds the ATF/MCUPM CPU
+ * power-management state words; no client may start channel 3.
+ */
+#define MCUPM_CH(_name, _n, _tx_words, _rx_words)			\
+	{ _name, _n, (_n) * 0xa0, (_tx_words) * 4,			\
+	  (_n) * 0xa0 + 0x50, (_rx_words) * 4 }
+
+static const struct mtk_gpueb_mbox_variant mtk_mcupm_mbox_mt6897 = {
+	.clk_optional = true,
+	.irq_per_channel = true,
+	.ctl_tx_sts = 0x00,
+	.ctl_irq_set = 0x04,
+	.ctl_irq_clr = 0x18,
+	.ctl_rx_sts = 0x10,
+	.num_channels = 16,
+	.channels = {
+		MCUPM_CH("platform", 0, 3, 1),
+		MCUPM_CH("ch1",  1, 4, 4),
+		MCUPM_CH("ch2",  2, 9, 1),
+		MCUPM_CH("ch3",  3, 3, 1),
+		MCUPM_CH("ch4",  4, 3, 1),
+		MCUPM_CH("ch5",  5, 1, 4),
+		MCUPM_CH("ch6",  6, 4, 1),
+		MCUPM_CH("ch7",  7, 4, 1),
+		MCUPM_CH("ch8",  8, 4, 1),
+		MCUPM_CH("ch9",  9, 4, 1),
+		MCUPM_CH("ch10", 10, 4, 1),
+		MCUPM_CH("ch11", 11, 4, 1),
+		MCUPM_CH("ch12", 12, 4, 1),
+		MCUPM_CH("ch13", 13, 4, 1),
+		MCUPM_CH("ch14", 14, 4, 1),
+		MCUPM_CH("ch15", 15, 4, 1),
+	},
+};
+
 static const struct of_device_id mtk_gpueb_mbox_of_ids[] = {
+	{ .compatible = "mediatek,mt6897-mcupm-mbox", .data = &mtk_mcupm_mbox_mt6897 },
 	{ .compatible = "mediatek,mt6897-gpueb-mbox", .data = &mtk_gpueb_mbox_mt6897 },
 	{ .compatible = "mediatek,mt8196-gpueb-mbox", .data = &mtk_gpueb_mbox_mt8196 },
 	{ /* Sentinel */ }
