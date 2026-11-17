@@ -124,6 +124,19 @@
 	status = "okay";
 };
 
+/*
+ * MCUPM mailbox and bring-up client (CPU idle states experiment): the client
+ * sends the vendor's platform IPI and timesync at probe, each switchable with
+ * mtk_mcupm_mt6897.ping= / .timesync=, and logs the ATF/MCUPM state words.
+ */
+&mcupm_mbox {
+	status = "okay";
+};
+
+&mcupm {
+	status = "okay";
+};
+
 &soc {
 	/*
 	 * The bootloader reads its boot mode from the low nibble of the
@@ -767,8 +780,11 @@
 /*
  * Thermal sensors (LVTS). The bootloader programs the controllers, including
  * the 119 C hardware reset; the driver only reads them, so the zones are
- * polled. Only the CPU and SoC domains are described: the GPU and APU sensor
- * blocks sit in power domains that are off. Calibration falls back to defaults
+ * polled. The CPU, SoC and GPU domains are described; the APU block sits in a
+ * power domain nothing here powers. The GPU controller (0x13ff0000) is inside
+ * the GPU power domain: its node is a consumer of that domain but never keeps
+ * it on, is only read while the domain is on, and reports -EAGAIN (no
+ * reading) while the GPU is off. Calibration falls back to defaults
  * (about 0.4 C off on this unit) until there is an nvmem provider for the
  * bootloader's devinfo copy. CPUs throttle from 95 C; the stock tree's only
  * trip is at the hardware limit.
@@ -788,6 +804,15 @@
 		compatible = "mediatek,mt6897-lvts-mcu";
 		reg = <0x0 0x10316000 0x0 0x1000>;
 		interrupts = <GIC_SPI 265 IRQ_TYPE_LEVEL_HIGH 0>;
+		#thermal-sensor-cells = <1>;
+	};
+
+	/* vendor lvts node: 4th reg range and 4th interrupt (SPI 0x250) */
+	lvts_gpu: thermal-sensor@13ff0000 {
+		compatible = "mediatek,mt6897-lvts-gpu";
+		reg = <0x0 0x13ff0000 0x0 0x1000>;
+		interrupts = <GIC_SPI 592 IRQ_TYPE_LEVEL_HIGH 0>;
+		power-domains = <&gpufreq>;
 		#thermal-sensor-cells = <1>;
 	};
 };
@@ -1542,6 +1567,96 @@
 				};
 				map2 {
 					trip = <&soc_bot1_fan_high>;
+					cooling-device = <&fan 2 2>;
+				};
+			};
+		};
+
+		/*
+		 * GPU sensor 0 (vendor TS9_0, zone gpu1). Only reads while
+		 * the GPU is powered; while it is off the zone has no value and
+		 * its trips do not change state. The SoC zones above keep their
+		 * fan and GPU maps until these are proven on hardware.
+		 */
+		gpu0-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_gpu MT6897_GPU0>;
+
+			trips {
+				gpu0_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				gpu0_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				gpu0_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&gpu0_passive>;
+					cooling-device = <&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&gpu0_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&gpu0_fan_high>;
+					cooling-device = <&fan 2 2>;
+				};
+			};
+		};
+
+		/*
+		 * GPU sensor 1 (vendor TS9_1, zone gpu2). Only reads while
+		 * the GPU is powered; while it is off the zone has no value and
+		 * its trips do not change state. The SoC zones above keep their
+		 * fan and GPU maps until these are proven on hardware.
+		 */
+		gpu1-thermal {
+			polling-delay = <1000>;
+			polling-delay-passive = <250>;
+			thermal-sensors = <&lvts_gpu MT6897_GPU1>;
+
+			trips {
+				gpu1_fan_low: trip-fan-low {
+					temperature = <70000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				gpu1_fan_high: trip-fan-high {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				gpu1_passive: trip-passive {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&gpu1_passive>;
+					cooling-device = <&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+				map1 {
+					trip = <&gpu1_fan_low>;
+					cooling-device = <&fan 1 1>;
+				};
+				map2 {
+					trip = <&gpu1_fan_high>;
 					cooling-device = <&fan 2 2>;
 				};
 			};

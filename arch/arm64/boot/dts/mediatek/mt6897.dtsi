@@ -85,24 +85,28 @@
 			compatible = "arm,cortex-a510";
 			reg = <0x0>;
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_off_l>;
 		};
 		cpu1: cpu@1 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a510";
 			reg = <0x100>;
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_off_l>;
 		};
 		cpu2: cpu@2 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a510";
 			reg = <0x200>;
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_off_l>;
 		};
 		cpu3: cpu@3 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a510";
 			reg = <0x300>;
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_off_l>;
 		};
 
 		/* 3x + 1x Cortex-A715 */
@@ -111,24 +115,65 @@
 			compatible = "arm,cortex-a715";
 			reg = <0x400>;
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_off_m>;
 		};
 		cpu5: cpu@101 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a715";
 			reg = <0x500>;
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_off_m>;
 		};
 		cpu6: cpu@102 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a715";
 			reg = <0x600>;
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_off_m>;
 		};
 		cpu7: cpu@200 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a715";
 			reg = <0x700>;
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_off_b>;
+		};
+
+		/*
+		 * Core power-down only, with the vendor tree's PSCI parameter and
+		 * timings. The vendor tree also lists cluster, MCUSYS and system
+		 * states; those are coordinated by its low-power-management modules
+		 * and are not described here yet.
+		 */
+		idle-states {
+			entry-method = "psci";
+
+			cpu_off_l: cpu-off-l {
+				compatible = "arm,idle-state";
+				arm,psci-suspend-param = <0x00010000>;
+				local-timer-stop;
+				entry-latency-us = <126>;
+				exit-latency-us = <251>;
+				min-residency-us = <5700>;
+			};
+
+			cpu_off_m: cpu-off-m {
+				compatible = "arm,idle-state";
+				arm,psci-suspend-param = <0x00010000>;
+				local-timer-stop;
+				entry-latency-us = <77>;
+				exit-latency-us = <179>;
+				min-residency-us = <2520>;
+			};
+
+			cpu_off_b: cpu-off-b {
+				compatible = "arm,idle-state";
+				arm,psci-suspend-param = <0x00010000>;
+				local-timer-stop;
+				entry-latency-us = <52>;
+				exit-latency-us = <129>;
+				min-residency-us = <1890>;
+			};
 		};
 	};
 
@@ -692,6 +737,50 @@
 			gpueb_mem_name_table = "MEM_ID_GPUFREQ", "MEM_ID_LOG";
 
 			status = "okay";
+		};
+
+		/*
+		 * MCUPM (MCU power manager: CPU DVFS and CPU power states).
+		 * Tinysys mailbox as in the vendor mcupm@c070000 node: 16
+		 * mailboxes of 0xa0 bytes, shared control registers at
+		 * 0x0c072000, one interrupt per mailbox. Mailbox 3's memory
+		 * (0x0c0bf7e0) holds the ATF/MCUPM CPU power-management state.
+		 */
+		mcupm_mbox: mailbox@c0bf600 {
+			compatible = "mediatek,mt6897-mcupm-mbox";
+			reg = <0x0 0x0c0bf600 0x0 0xa00>,
+			      <0x0 0x0c072000 0x0 0x1c>;
+			reg-names = "data", "ctl";
+			interrupts = <GIC_SPI 48 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 49 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 50 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 51 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 52 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 53 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 54 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 55 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 56 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 57 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 58 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 59 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 60 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 61 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 62 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 63 IRQ_TYPE_LEVEL_HIGH 0>;
+			#mbox-cells = <1>;
+			status = "disabled";
+		};
+
+		mcupm: mcupm@c0bf7e0 {
+			compatible = "mediatek,mt6897-mcupm";
+			reg = <0x0 0x0c0bf7e0 0x0 0x40>,	/* ATF/MCUPM state, read only */
+			      <0x0 0x0c072000 0x0 0x1c>,	/* mailbox status, read only */
+			      <0x0 0x0c0bf8b0 0x0 0x10>,	/* mailbox 4 slots 12-15 */
+			      <0x0 0x0c0bf600 0x0 0x60>;	/* mailbox 0, for logging */
+			reg-names = "pm", "ctl", "timesync", "mbox0";
+			mboxes = <&mcupm_mbox 0>;
+			mbox-names = "platform";
+			status = "disabled";
 		};
 
 		/*
