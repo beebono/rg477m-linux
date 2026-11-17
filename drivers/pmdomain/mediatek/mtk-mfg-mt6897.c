@@ -37,6 +37,7 @@
  * register. All of that is the EB's.
  */
 
+#include <linux/bitfield.h>
 #include <linux/bits.h>
 #include <linux/clk-provider.h>
 #include <linux/completion.h>
@@ -57,6 +58,7 @@
 #include <linux/sizes.h>
 #include <linux/string_choices.h>
 #include <linux/units.h>
+#include <linux/workqueue.h>
 
 /* GPR block (vendor "gpueb_gpr_base", 0x13c2fd1c, 25 words) */
 #define GPR_NUM			25
@@ -75,6 +77,17 @@
 
 /* GPUEB_MBOX_PDCA_STA, 0x13c620a8 */
 #define PDCA_STA_BUSY		BIT(16)
+
+/*
+ * Read-only clock readback (vendor __gpufreq_get_real_fgpu/fstack and the
+ * "[Clk] MFG_PLL ... MFG_SEL" line of __gpufreq_dump_infra_status):
+ * MFG_PLL_CON1 0x13fa000c, MFGSC_PLL_CON1 0x13fa0c0c, TOPCK_CLK_CFG_30
+ * 0x100001f0. Freq(kHz) = (CON1[21:0] * 26000 >> 14) >> CON1[26:24].
+ */
+#define PLL_CON1_PCW		GENMASK(21, 0)
+#define PLL_CON1_POSDIV		GENMASK(26, 24)
+#define TOPCK_MFG_SEL_PLL	BIT(16)		/* MFG_SEL_MFGPLL_MASK */
+#define TOPCK_MFGSC_SEL_PLL	BIT(17)		/* MFGSC_SEL_MFGPSCLL_MASK */
 
 /* Mali registers read in stage B (offsets from GPU_CONTROL_BASE = 0) */
 #define MALI_GPU_ID		0x000
@@ -120,6 +133,8 @@
 #define GF_CUR_FLOOR		0x00b0
 #define GF_CUR_C_LIMITER	0x00b4
 #define GF_CUR_F_LIMITER	0x00b8
+#define GF_CUR_C_PRIORITY	0x00bc
+#define GF_CUR_F_PRIORITY	0x00c0
 #define GF_POWER_CONTROL	0x00c4
 #define GF_ACTIVE_SLEEP_CONTROL	0x00c8
 #define GF_DVFS_STATE		0x00cc
@@ -136,6 +151,17 @@
 #define GF_MFG_PWR_STATUS	0x010c
 #define GF_TEST_MODE		0x0114
 #define GF_WORKING_TABLE_GPU	0x03ec
+/*
+ * struct gpuppm_limit_info limit_table[LIMIT_NUM] at 0x1e2c, 44 bytes each:
+ * limiter, name[20], priority, ceiling, c_enable, floor, f_enable.
+ */
+#define GF_LIMIT_TABLE		0x1e2c
+#define GF_LIMIT_ENTRY_SIZE	44
+#define GF_LIMIT_PRIORITY	24
+#define GF_LIMIT_CEILING	28
+#define GF_LIMIT_C_ENABLE	32
+#define GF_LIMIT_FLOOR		36
+#define GF_LIMIT_F_ENABLE	40
 #define GF_SHARED_STATUS_SIZE	0x24ec
 
 /* struct gpufreq_opp_info: freq(kHz), volt, vsram (10 uV), posdiv, margin, power(mW) */
@@ -152,12 +178,36 @@
 
 enum mt6897_gf_cmd {
 	CMD_INIT_SHARED_MEM	= 0,
+	CMD_SET_LIMIT		= 5,
 	CMD_POWER_CONTROL	= 6,
 	CMD_ACTIVE_SLEEP_CONTROL = 7,
+	CMD_COMMIT		= 8,
 	CMD_FIX_TARGET_OPPIDX	= 13,
 };
 
+/* enum gpufreq_dvfs_state (vendor gpufreq_v2.h) */
+#define DVFS_DISABLE		BIT(0)
+#define DVFS_POWEROFF		BIT(1)
+#define DVFS_FIX_OPP		BIT(2)
+#define DVFS_FIX_FREQ_VOLT	BIT(3)
+#define DVFS_SLEEP		BIT(5)
+
 #define TARGET_GPU		1
+
+/* enum gpuppm_limiter and the reserved indices (vendor gpufreq_v2.h) */
+#define LIMIT_SEGMENT		0
+#define LIMIT_DEBUG		1	/* OPP index, priority 8: our static cap */
+#define LIMIT_THERMAL_AP	4	/* kHz, priority 6: left for a future thermal driver */
+#define LIMIT_NUM		13
+#define GPUPPM_DEFAULT_IDX	-1	/* drop this limiter's limit */
+#define GPUPPM_KEEP_IDX		-3	/* leave this side unchanged */
+
+/*
+ * Without a GPU thermal zone or cooling device the GPU must not go above this
+ * (OPP 37, 800 MHz, about 1.5 W). max_freq_khz can only be raised past it
+ * together with allow_above_cap=1.
+ */
+#define MT6897_HARD_CAP_KHZ	800000
 #define GPU_PWR_OFF		0
 #define GPU_PWR_ON		1
 
@@ -203,6 +253,68 @@ module_param(allow_power_off, bool, 0644);
 MODULE_PARM_DESC(allow_power_off,
 		 "Stage C: send CMD_POWER_CONTROL(off) when the genpd powers off (0 = keep the GPU on)");
 
+/*
+ * No GPU thermal zone or cooling device exists yet and the top OPPs draw up
+ * to 3.8 W, so every commit (devfreq or manual) is clamped to OPPs at or below
+ * this frequency, and only those OPPs are offered to the GPU device.
+ */
+static unsigned int max_freq_khz = MT6897_HARD_CAP_KHZ;
+static bool allow_above_cap;
+module_param(allow_above_cap, bool, 0644);
+MODULE_PARM_DESC(allow_above_cap,
+		 "Allow max_freq_khz and the debugfs limit above the built-in 800 MHz cap (no thermal protection!)");
+
+static int max_freq_khz_set(const char *val, const struct kernel_param *kp);
+static const struct kernel_param_ops max_freq_khz_ops = {
+	.set = max_freq_khz_set,
+	.get = param_get_uint,
+};
+module_param_cb(max_freq_khz, &max_freq_khz_ops, &max_freq_khz, 0644);
+MODULE_PARM_DESC(max_freq_khz,
+		 "Highest GPU frequency, kHz: enforced in the EB with CMD_SET_LIMIT and by every commit (devfreq OPP table is cut at attach time)");
+
+static bool auto_active = true;
+module_param(auto_active, bool, 0644);
+MODULE_PARM_DESC(auto_active,
+		 "Stage C: send CMD_ACTIVE_SLEEP_CONTROL(active) after power-on when the EB reports active_sleep_control");
+
+static bool verbose = true;
+module_param(verbose, bool, 0644);
+MODULE_PARM_DESC(verbose,
+		 "Log every IPI and status readback at info level (0 = debug level; errors always logged)");
+
+/* Routine per-IPI / per-readback logging, at info level only while bring-up wants it. */
+#define mfg_vinfo(dev, fmt, ...)					\
+	do {								\
+		if (verbose)						\
+			dev_info(dev, fmt, ##__VA_ARGS__);		\
+		else							\
+			dev_dbg(dev, fmt, ##__VA_ARGS__);		\
+	} while (0)
+
+/*
+ * Breadcrumbs for silent deaths: one short line before each step that could
+ * hang the bus or the EB (lock, IPI, MMIO read group). printk() writes the
+ * pstore/ramoops console synchronously in the caller's context on this
+ * (non-PREEMPT_RT) kernel, so the last "@" line in console-ramoops is the
+ * last step that was entered.
+ */
+#define mfg_step(mfg, fmt, ...)						\
+	do {								\
+		if (verbose)						\
+			dev_info((mfg)->dev, "@ " fmt "\n", ##__VA_ARGS__);	\
+	} while (0)
+
+static bool force;
+module_param(force, bool, 0644);
+MODULE_PARM_DESC(force,
+		 "Let debugfs triggers idle the EB while a consumer (panthor) holds the power domain on (dangerous)");
+
+static bool follow_devfreq = true;
+module_param(follow_devfreq, bool, 0644);
+MODULE_PARM_DESC(follow_devfreq,
+		 "Stage C: turn genpd performance-state requests (devfreq) into CMD_COMMIT (0 = record only)");
+
 struct mt6897_mfg;
 
 struct mt6897_mbox {
@@ -239,8 +351,42 @@ struct mt6897_mfg {
 	bool fix_applied;
 	unsigned int dbg_power_refs;	/* stage B power-on requests */
 
+	/*
+	 * EB-side state. Power is ours to track (the EB has no other client);
+	 * active/idle is NOT: the EB may come out of POWER_CONTROL(on) already
+	 * active, so it is always read from shared active_count.
+	 */
+	bool eb_powered;		/* POWER_CONTROL(on) sent, no off since */
+	bool going_down;		/* power-off started: no MFG register reads */
+	/*
+	 * ACTIVE references held by this driver (0 or 1). The EB's
+	 * active_count also contains a reference the EB takes by itself when
+	 * the GPU starts running and drops when it goes idle; that one is
+	 * never ours to release (boot 75: releasing it killed the SoC).
+	 */
+	int our_active;
+	int seen_active;		/* last logged EB active_count */
+
+	/*
+	 * After power-on the EB activates itself once the GPU runs (after
+	 * genpd power_on has returned) and may then re-apply an OPP of its
+	 * own; this re-checks opp_idx against the target a few times.
+	 */
+	struct delayed_work verify_work;
+	unsigned int verify_left;
+	int target_idx;			/* OPP index to commit (devfreq / manual) */
+	int last_commit;		/* last index acknowledged by CMD_COMMIT */
+	int eb_limit;			/* LIMIT_DEBUG ceiling we set, -1 = none */
+
+	void __iomem *mfgpll_con1;	/* optional, read-only */
+	void __iomem *mfgscpll_con1;
+	void __iomem *topck_cfg30;
+
 	struct dentry *dbg;
 };
+
+/* the single instance, for the module-parameter callback and genpd dev_ops */
+static struct mt6897_mfg *mt6897_the_mfg;
 
 static inline u32 gf_read(struct mt6897_mfg *mfg, unsigned int off)
 {
@@ -273,6 +419,7 @@ struct mt6897_pwr {
 
 static void mt6897_read_pwr(struct mt6897_mfg *mfg, struct mt6897_pwr *p)
 {
+	mfg_step(mfg, "rd SPM/RPC/PDCA status");
 	p->spm = readl(mfg->spm + SPM_XPU_PWR_STATUS);
 	p->spm2 = readl(mfg->spm + SPM_XPU_PWR_STATUS_2ND);
 	p->rpc = readl(mfg->rpc + RPC_PWR_CON_STATUS);
@@ -290,7 +437,7 @@ static void mt6897_log_pwr(struct mt6897_mfg *mfg, const char *when, struct mt68
 	if (!p)
 		p = &tmp;
 	mt6897_read_pwr(mfg, p);
-	dev_info(mfg->dev,
+	mfg_vinfo(mfg->dev,
 		 "[%s] SPM XPU_PWR_STATUS=%08x/%08x (MFG0 %s), MFG_RPC PWR_CON_STATUS=%08x/%08x (MFG1 %s, MFG1-14 mask %08lx), MFG1_PWR_CON=%08x, PDCA_STA=%08x\n",
 		 when, p->spm, p->spm2, str_on_off(p->mfg0_on), p->rpc, p->rpc2,
 		 str_on_off(p->mfg1_on), p->rpc & RPC_MFG1_14_MASK, p->mfg1_con, p->pdca);
@@ -359,6 +506,112 @@ static void mt6897_log_opps(struct mt6897_mfg *mfg)
 			 "[A1] OPP[%02d] %7u kHz  vgpu %6u  vsram %6u (10uV)  posdiv %u  margin %u  %5u mW\n",
 			 i, e[0], e[1], e[2], e[3], e[4], e[5]);
 	}
+}
+
+/* Fastest OPP index at or below @khz (indices run fastest -> slowest). */
+static int mt6897_idx_for_khz(struct mt6897_mfg *mfg, unsigned int khz)
+{
+	int i, n = mt6897_opp_num(mfg);
+	u32 e[6];
+
+	for (i = 0; i < n; i++) {
+		mt6897_read_opp(mfg, i, e);
+		if (e[0] <= khz)
+			return i;
+	}
+	return n - 1;
+}
+
+/* Fastest OPP index allowed by max_freq_khz. */
+static int mt6897_ceil_idx(struct mt6897_mfg *mfg)
+{
+	return mt6897_idx_for_khz(mfg, max_freq_khz);
+}
+
+/* The EB's own view; it can turn active on its own at POWER_CONTROL(on). */
+static int mt6897_active_count(struct mt6897_mfg *mfg)
+{
+	return (int)gf_read(mfg, GF_ACTIVE_COUNT);
+}
+
+static void mt6897_log_limits(struct mt6897_mfg *mfg, const char *when)
+{
+	static const int show[] = { LIMIT_SEGMENT, LIMIT_DEBUG, LIMIT_THERMAL_AP };
+	unsigned int i;
+
+	mfg_vinfo(mfg->dev, "[%s] EB limits: ceiling=%d (limiter %u, prio %u) floor=%d (limiter %u, prio %u)\n",
+		  when, (int)gf_read(mfg, GF_CUR_CEILING), gf_read(mfg, GF_CUR_C_LIMITER),
+		  gf_read(mfg, GF_CUR_C_PRIORITY), (int)gf_read(mfg, GF_CUR_FLOOR),
+		  gf_read(mfg, GF_CUR_F_LIMITER), gf_read(mfg, GF_CUR_F_PRIORITY));
+	for (i = 0; i < ARRAY_SIZE(show); i++) {
+		unsigned int off = GF_LIMIT_TABLE + show[i] * GF_LIMIT_ENTRY_SIZE;
+		char name[21];
+
+		memcpy_fromio(name, mfg->shared + off + 4, 20);
+		name[20] = '\0';
+		mfg_vinfo(mfg->dev, "[%s]   limit_table[%d] id=%u name='%s' prio=%u ceiling=%d (en %u) floor=%d (en %u)\n",
+			  when, show[i], gf_read(mfg, off), name,
+			  gf_read(mfg, off + GF_LIMIT_PRIORITY),
+			  (int)gf_read(mfg, off + GF_LIMIT_CEILING),
+			  gf_read(mfg, off + GF_LIMIT_C_ENABLE),
+			  (int)gf_read(mfg, off + GF_LIMIT_FLOOR),
+			  gf_read(mfg, off + GF_LIMIT_F_ENABLE));
+	}
+}
+
+static unsigned int mt6897_pll_khz(u32 con1)
+{
+	u64 pcw = FIELD_GET(PLL_CON1_PCW, con1);
+
+	return (unsigned int)(((pcw * 26000) >> 14) >> FIELD_GET(PLL_CON1_POSDIV, con1));
+}
+
+/*
+ * One line with what the EB says (shared memory) and, when MFG1 is powered,
+ * what the PLL and mux registers say. All reads, no side effects (the
+ * vendor's frequency meter needs FQMTR_CON writes and is not used).
+ */
+/*
+ * MFG PLL / mux registers are only read while this driver has the GPU powered,
+ * no power-off is in progress, and MFG1 reports on.
+ */
+static bool mt6897_mfg_readable(struct mt6897_mfg *mfg, const struct mt6897_pwr *p)
+{
+	return mfg->eb_powered && !mfg->going_down && p->mfg1_on &&
+	       mfg->mfgpll_con1 && mfg->mfgscpll_con1 && mfg->topck_cfg30;
+}
+
+static void mt6897_log_freq(struct mt6897_mfg *mfg, const char *when)
+{
+	struct mt6897_pwr p;
+	u32 c1 = 0, c2 = 0, sel = 0;
+	bool hw;
+
+	mt6897_read_pwr(mfg, &p);
+	hw = mt6897_mfg_readable(mfg, &p);
+	if (hw) {
+		mfg_step(mfg, "rd MFG PLL/TOPCK (%s)", when);
+		c1 = readl(mfg->mfgpll_con1);
+		c2 = readl(mfg->mfgscpll_con1);
+		sel = readl(mfg->topck_cfg30);
+	}
+	mfg_vinfo(mfg->dev,
+		 "[%s] EB: opp_idx=%d fgpu=%u kHz fstack=%u kHz vgpu=%u vsram=%u (10uV) power=%u mW active_count=%d dvfs_state=%#x%s%s%s ceil/floor=%d/%d\n",
+		 when, (int)gf_read(mfg, GF_CUR_OPPIDX_GPU), gf_read(mfg, GF_CUR_FGPU),
+		 gf_read(mfg, GF_CUR_FSTACK), gf_read(mfg, GF_CUR_VGPU),
+		 gf_read(mfg, GF_CUR_VSRAM_GPU), gf_read(mfg, GF_CUR_POWER_GPU),
+		 (int)gf_read(mfg, GF_ACTIVE_COUNT), gf_read(mfg, GF_DVFS_STATE),
+		 (gf_read(mfg, GF_DVFS_STATE) & DVFS_SLEEP) ? " SLEEP" : "",
+		 (gf_read(mfg, GF_DVFS_STATE) & DVFS_POWEROFF) ? " POWEROFF" : "",
+		 (gf_read(mfg, GF_DVFS_STATE) & DVFS_FIX_OPP) ? " FIX_OPP" : "",
+		 (int)gf_read(mfg, GF_CUR_CEILING), (int)gf_read(mfg, GF_CUR_FLOOR));
+	if (hw)
+		mfg_vinfo(mfg->dev,
+			 "[%s] HW: MFG_PLL_CON1=%08x (%u kHz) MFGSC_PLL_CON1=%08x (%u kHz) TOPCK_CLK_CFG_30=%08x (MFG mux %s, MFGSC mux %s)\n",
+			 when, c1, mt6897_pll_khz(c1), c2, mt6897_pll_khz(c2), sel,
+			 (sel & TOPCK_MFG_SEL_PLL) ? "PLL" : "26M", (sel & TOPCK_MFGSC_SEL_PLL) ? "PLL" : "26M");
+	else
+		mfg_vinfo(mfg->dev, "[%s] HW: PLL/mux registers not read (MFG1 off or not described)\n", when);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -449,7 +702,7 @@ static int mt6897_send_ipi(struct mt6897_mfg *mfg, struct mt6897_gf_ipi_msg *msg
 	mfg->tx_buf = *msg;
 	reinit_completion(&mfg->rx_done);
 
-	dev_info(mfg->dev, "IPI %s -> EB: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+	mfg_vinfo(mfg->dev, "IPI %s -> EB: %08x %08x %08x %08x %08x %08x %08x %08x\n",
 		 what, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
 
 	/* data words -> 0x13c2fd90..0x13c2fdac, then BIT(1) -> IRQ_SET 0x13c62004 */
@@ -468,7 +721,7 @@ static int mt6897_send_ipi(struct mt6897_mfg *mfg, struct mt6897_gf_ipi_msg *msg
 		return -ETIMEDOUT;
 	}
 
-	dev_info(mfg->dev, "IPI %s <- EB: %08x %08x %08x %08x %08x %08x %08x %08x (return %d)\n",
+	mfg_vinfo(mfg->dev, "IPI %s <- EB: %08x %08x %08x %08x %08x %08x %08x %08x (return %d)\n",
 		 what, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], (int)r[4]);
 	*retval = (int)r[4];
 
@@ -477,6 +730,8 @@ static int mt6897_send_ipi(struct mt6897_mfg *mfg, struct mt6897_gf_ipi_msg *msg
 
 /* ------------------------------------------------------------------------ */
 /* Stage A1: shared memory init                                             */
+
+static int mt6897_set_limit_locked(struct mt6897_mfg *mfg, int ceil, const char *who);
 
 static int mt6897_init_locked(struct mt6897_mfg *mfg)
 {
@@ -547,7 +802,14 @@ static int mt6897_init_locked(struct mt6897_mfg *mfg)
 			 (int)gf_read(mfg, GF_OPP_NUM_GPU));
 
 	mfg->initialized = true;
-	dev_info(mfg->dev, "[A1] done: EB accepted the shared memory\n");
+	mfg->target_idx = mt6897_opp_num(mfg) - 1;
+
+	/* the cap goes into the EB before the GPU is ever powered */
+	mt6897_log_limits(mfg, "A1");
+	if (mt6897_set_limit_locked(mfg, mt6897_ceil_idx(mfg), "A1"))
+		dev_err(mfg->dev, "[A1] !!! EB-side ceiling NOT set; only the driver clamp protects the GPU\n");
+	dev_info(mfg->dev, "[A1] done: EB accepted the shared memory; max_freq_khz=%u -> fastest allowed OPP %d\n",
+		 max_freq_khz, mt6897_ceil_idx(mfg));
 	return 0;
 }
 
@@ -599,6 +861,7 @@ static int mt6897_power_control_locked(struct mt6897_mfg *mfg, bool on, const ch
 	if (!gf_read(mfg, GF_POWER_CONTROL)) {
 		dev_info(mfg->dev, "[%s] EB reports power_control=0: vendor sends no POWER_CONTROL (GPU kept on by EB)\n",
 			 who);
+		mfg->eb_powered = on;
 		if (!on)
 			return 0;
 		mt6897_read_pwr(mfg, &p);
@@ -614,7 +877,8 @@ static int mt6897_power_control_locked(struct mt6897_mfg *mfg, bool on, const ch
 		dev_err(mfg->dev, "[%s] EB refused POWER_CONTROL(%s): %d\n", who, str_on_off(on), rv);
 		return -EIO;
 	}
-	dev_info(mfg->dev, "[%s] POWER_CONTROL(%s) ok, EB power_count=%d (shared %d)\n",
+	mfg->eb_powered = on;
+	mfg_vinfo(mfg->dev, "[%s] POWER_CONTROL(%s) ok, EB power_count=%d (shared %d)\n",
 		 who, str_on_off(on), rv, (int)gf_read(mfg, GF_POWER_COUNT));
 	return 0;
 }
@@ -638,6 +902,402 @@ static int mt6897_fix_opp_locked(struct mt6897_mfg *mfg, int idx)
 	return rv < 0 ? -EIO : 0;
 }
 
+/*
+ * CMD_ACTIVE_SLEEP_CONTROL, as gpufreq_active_sleep_control() in EB mode:
+ * only sent when the EB reports active_sleep_control. On this firmware the EB
+ * powers the GPU on with both muxes on the 26 MHz reference and DVFS_SLEEP
+ * set; "active" moves them to the PLLs and unfreezes DVFS. The vendor rule is
+ * active only while powered, idle before power-off.
+ */
+static int mt6897_active_locked(struct mt6897_mfg *mfg, bool active, const char *who)
+{
+	struct mt6897_gf_ipi_msg msg = {};
+	int ret, rv, before;
+
+	lockdep_assert_held(&mfg->lock);
+
+	if (!gf_read(mfg, GF_ACTIVE_SLEEP_CONTROL)) {
+		dev_info(mfg->dev, "[%s] EB reports active_sleep_control=0: not sending ACTIVE_SLEEP_CONTROL\n", who);
+		return 0;
+	}
+	if (active && !mfg->eb_powered) {
+		dev_err(mfg->dev, "[%s] refusing ACTIVE_SLEEP_CONTROL(active) while not powered\n", who);
+		return -EPERM;
+	}
+
+	before = mt6897_active_count(mfg);
+	if (active ? mfg->our_active > 0 : mfg->our_active <= 0) {
+		mfg_vinfo(mfg->dev, "[%s] %s: we hold %d ACTIVE reference(s), EB active_count=%d; nothing sent\n",
+			  who, active ? "active" : "idle", mfg->our_active, before);
+		return 0;
+	}
+
+	msg.cmd = cpu_to_le32(CMD_ACTIVE_SLEEP_CONTROL);
+	msg.u.value = cpu_to_le32(active ? GPU_PWR_ON : GPU_PWR_OFF);
+	ret = mt6897_send_ipi(mfg, &msg, active ? "ACTIVE_SLEEP_CONTROL(active)" :
+			      "ACTIVE_SLEEP_CONTROL(idle)", &rv);
+	if (ret)
+		return ret;
+	if (rv < 0) {
+		dev_err(mfg->dev, "[%s] EB refused ACTIVE_SLEEP_CONTROL(%s): %d\n",
+			who, active ? "active" : "idle", rv);
+		return -EIO;
+	}
+	mfg->our_active += active ? 1 : -1;
+	mfg_vinfo(mfg->dev, "[%s] ACTIVE_SLEEP_CONTROL(%s) ok, EB active_count %d -> %d (shared %d), ours now %d\n",
+		  who, active ? "active" : "idle", before, rv, mt6897_active_count(mfg),
+		  mfg->our_active);
+	mt6897_log_freq(mfg, who);
+	return 0;
+}
+
+static bool mt6897_is_active(struct mt6897_mfg *mfg)
+{
+	return mt6897_active_count(mfg) > 0 || !gf_read(mfg, GF_ACTIVE_SLEEP_CONTROL);
+}
+
+/*
+ * CMD_SET_LIMIT, as gpufreq_set_limit() sends it in EB mode
+ * (gpufreq_v2.c:940-968): target, then u.set_limit = {limiter, ceiling_info,
+ * floor_info}. For LIMIT_DEBUG both infos are OPP indices
+ * (__gpuppm_convert_limit_to_idx); -1 (GPUPPM_DEFAULT_IDX) drops the limit,
+ * -3 (GPUPPM_KEEP_IDX) leaves that side alone. The most restrictive ceiling
+ * of all enabled limiters wins (__gpuppm_sort_limit). The EB moves a running
+ * GPU down at once (instant DVFS); a powered-off or sleeping GPU is not moved.
+ */
+static int mt6897_set_limit_locked(struct mt6897_mfg *mfg, int ceil, const char *who)
+{
+	struct mt6897_gf_ipi_msg msg = {};
+	unsigned int off = GF_LIMIT_TABLE + LIMIT_DEBUG * GF_LIMIT_ENTRY_SIZE;
+	int ret, rv;
+
+	lockdep_assert_held(&mfg->lock);
+
+	msg.cmd = cpu_to_le32(CMD_SET_LIMIT);
+	msg.target = cpu_to_le32(TARGET_GPU);
+	msg.u.raw[0] = cpu_to_le32(LIMIT_DEBUG);
+	msg.u.raw[1] = cpu_to_le32((u32)(ceil >= 0 ? ceil : GPUPPM_DEFAULT_IDX));
+	msg.u.raw[2] = cpu_to_le32((u32)GPUPPM_KEEP_IDX);
+	ret = mt6897_send_ipi(mfg, &msg, "SET_LIMIT", &rv);
+	if (ret)
+		return ret;
+	if (rv < 0) {
+		dev_err(mfg->dev, "[%s] EB refused SET_LIMIT(DEBUG, ceiling %d): %d\n", who, ceil, rv);
+		return -EIO;
+	}
+	mfg->eb_limit = ceil;
+	mt6897_log_limits(mfg, who);
+
+	/* the effective ceiling decides; the per-limiter entry is informational */
+	if (ceil >= 0 && (int)gf_read(mfg, GF_CUR_CEILING) < ceil) {
+		dev_err(mfg->dev, "[%s] EB acked SET_LIMIT but shows ceiling %d (DEBUG entry %d), wanted %d\n",
+			who, (int)gf_read(mfg, GF_CUR_CEILING),
+			(int)gf_read(mfg, off + GF_LIMIT_CEILING), ceil);
+		return -EIO;
+	}
+	if (ceil >= 0 && (int)gf_read(mfg, off + GF_LIMIT_CEILING) != ceil)
+		dev_warn(mfg->dev, "[%s] effective ceiling ok but limit_table[DEBUG].ceiling reads %d\n",
+			 who, (int)gf_read(mfg, off + GF_LIMIT_CEILING));
+	dev_info(mfg->dev, "[%s] EB ceiling now OPP %d (%u kHz), limiter %u\n", who,
+		 (int)gf_read(mfg, GF_CUR_CEILING),
+		 gf_read(mfg, GF_WORKING_TABLE_GPU +
+			 max((int)gf_read(mfg, GF_CUR_CEILING), 0) * GF_OPP_ENTRY_SIZE),
+		 gf_read(mfg, GF_CUR_C_LIMITER));
+	return 0;
+}
+
+/* Re-send our ceiling if the EB no longer shows it (e.g. lost across power). */
+static void mt6897_ensure_limit_locked(struct mt6897_mfg *mfg, const char *who)
+{
+	int want = mfg->eb_limit;
+
+	if (want < 0)
+		return;
+	if ((int)gf_read(mfg, GF_CUR_CEILING) >= want)
+		return;
+	dev_warn(mfg->dev, "[%s] EB ceiling is %d, ours is %d: re-sending SET_LIMIT\n",
+		 who, (int)gf_read(mfg, GF_CUR_CEILING), want);
+	mt6897_set_limit_locked(mfg, want, who);
+}
+
+/*
+ * Read-only check that the GPU is not clocked above max_freq_khz. If it is,
+ * shout and pull it down with a commit (only possible while active).
+ */
+static void mt6897_commit_locked_quiet(struct mt6897_mfg *mfg, int idx, const char *who);
+
+static bool mt6897_check_cap_locked(struct mt6897_mfg *mfg, const char *who)
+{
+	struct mt6897_pwr p;
+	u32 c1, sel;
+	unsigned int khz;
+
+	mt6897_read_pwr(mfg, &p);
+	if (!mt6897_mfg_readable(mfg, &p))
+		return true;
+	mfg_step(mfg, "rd MFG PLL/TOPCK (cap check, %s)", who);
+	c1 = readl(mfg->mfgpll_con1);
+	sel = readl(mfg->topck_cfg30);
+	khz = mt6897_pll_khz(c1);
+	if (!(sel & TOPCK_MFG_SEL_PLL) || khz <= max_freq_khz)
+		return true;
+
+	dev_err(mfg->dev, "[%s] !!! GPU clocked at %u kHz (MFG_PLL_CON1 %08x, mux PLL) above max_freq_khz=%u; EB opp_idx=%d ceiling=%d active_count=%d: committing the ceiling now\n",
+		who, khz, c1, max_freq_khz, (int)gf_read(mfg, GF_CUR_OPPIDX_GPU),
+		(int)gf_read(mfg, GF_CUR_CEILING), mt6897_active_count(mfg));
+	mt6897_commit_locked_quiet(mfg, mt6897_ceil_idx(mfg), who);
+	mt6897_log_freq(mfg, who);
+	return false;
+}
+
+
+/*
+ * CMD_COMMIT, as gpufreq_commit(TARGET_DEFAULT, idx) in EB mode: the wrapper's
+ * dual-buck is 0 (gpufreq-wrapper DT), so TARGET_DEFAULT becomes TARGET_GPU.
+ * The EB scales both MFGPLL and MFGSCPLL and applies VGPU/VSRAM itself.
+ */
+static int mt6897_commit_locked(struct mt6897_mfg *mfg, int idx, const char *who)
+{
+	struct mt6897_gf_ipi_msg msg = {};
+	int ret, rv, ceil, n = mt6897_opp_num(mfg);
+
+	lockdep_assert_held(&mfg->lock);
+
+	if (!n)
+		return -EINVAL;
+	ceil = mt6897_ceil_idx(mfg);
+	if (idx < ceil) {
+		dev_info(mfg->dev, "[%s] OPP %d above max_freq_khz=%u, clamped to %d\n",
+			 who, idx, max_freq_khz, ceil);
+		idx = ceil;
+	}
+	if (idx >= n)
+		idx = n - 1;
+	if (!mfg->eb_powered) {
+		dev_err(mfg->dev, "[%s] refusing CMD_COMMIT while not powered\n", who);
+		return -EPERM;
+	}
+
+	msg.cmd = cpu_to_le32(CMD_COMMIT);
+	msg.target = cpu_to_le32(TARGET_GPU);
+	msg.u.value = cpu_to_le32((u32)idx);
+	ret = mt6897_send_ipi(mfg, &msg, "COMMIT", &rv);
+	if (ret)
+		return ret;
+	if (rv < 0) {
+		dev_err(mfg->dev, "[%s] EB refused COMMIT(GPU, %d): %d\n", who, idx, rv);
+		return -EIO;
+	}
+	mfg->last_commit = idx;
+	if ((int)gf_read(mfg, GF_CUR_OPPIDX_GPU) != idx)
+		dev_warn(mfg->dev, "[%s] COMMIT(GPU, %d) acked but EB opp_idx is %d (dvfs_state %#x, active_count %d)\n",
+			 who, idx, (int)gf_read(mfg, GF_CUR_OPPIDX_GPU), gf_read(mfg, GF_DVFS_STATE),
+			 mt6897_active_count(mfg));
+	return 0;
+}
+
+/* Effective index a commit of @idx ends at, after our clamp. */
+static int mt6897_clamped(struct mt6897_mfg *mfg, int idx)
+{
+	return min(max(idx, mt6897_ceil_idx(mfg)), mt6897_opp_num(mfg) - 1);
+}
+
+/*
+ * Commit and make sure the EB really sits at that index afterwards: re-read
+ * opp_idx, re-send up to twice. Only meaningful while active (the EB ignores
+ * commits while DVFS is frozen).
+ */
+static int mt6897_commit_verified_locked(struct mt6897_mfg *mfg, int idx, const char *who)
+{
+	int want = mt6897_clamped(mfg, idx), tries, ret = 0;
+
+	for (tries = 0; tries < 3; tries++) {
+		if ((int)gf_read(mfg, GF_CUR_OPPIDX_GPU) == want && tries)
+			break;
+		ret = mt6897_commit_locked(mfg, idx, who);
+		if (ret)
+			return ret;
+		if ((int)gf_read(mfg, GF_CUR_OPPIDX_GPU) == want)
+			break;
+		usleep_range(500, 1000);
+	}
+	if ((int)gf_read(mfg, GF_CUR_OPPIDX_GPU) != want) {
+		dev_err(mfg->dev, "[%s] EB opp_idx %d after %d COMMIT(%d) (active_count %d, dvfs_state %#x)\n",
+			who, (int)gf_read(mfg, GF_CUR_OPPIDX_GPU), tries, want,
+			mt6897_active_count(mfg), gf_read(mfg, GF_DVFS_STATE));
+		return -EIO;
+	}
+	return 0;
+}
+
+static void mt6897_verify_work(struct work_struct *work)
+{
+	struct mt6897_mfg *mfg = container_of(to_delayed_work(work), struct mt6897_mfg,
+					      verify_work);
+	int cnt, want, cur;
+
+	mfg_step(mfg, "verify: lock");
+	mutex_lock(&mfg->lock);
+	if (!mfg->eb_powered || mfg->going_down)
+		goto out;
+
+	cnt = mt6897_active_count(mfg);
+	if (cnt != mfg->seen_active) {
+		mfg_vinfo(mfg->dev, "[verify] EB active_count %d -> %d (ours %d)\n",
+			  mfg->seen_active, cnt, mfg->our_active);
+		mfg->seen_active = cnt;
+	}
+	mt6897_check_cap_locked(mfg, "verify");
+
+	want = mt6897_clamped(mfg, mfg->target_idx);
+	cur = (int)gf_read(mfg, GF_CUR_OPPIDX_GPU);
+	if (follow_devfreq && fix_oppidx < 0 && mt6897_is_active(mfg) && cur != want) {
+		dev_info(mfg->dev, "[verify] EB at OPP %d, target %d: committing\n", cur, want);
+		mt6897_commit_verified_locked(mfg, mfg->target_idx, "verify");
+		mt6897_log_freq(mfg, "verify");
+	}
+	if (mfg->verify_left) {
+		mfg->verify_left--;
+		schedule_delayed_work(&mfg->verify_work, msecs_to_jiffies(200));
+	}
+out:
+	mutex_unlock(&mfg->lock);
+}
+
+static void mt6897_commit_locked_quiet(struct mt6897_mfg *mfg, int idx, const char *who)
+{
+	if (mt6897_commit_locked(mfg, idx, who))
+		dev_warn(mfg->dev, "[%s] COMMIT(%d) failed\n", who, idx);
+}
+
+/*
+ * Bring the GPU up so that it never runs above the ceiling for longer than
+ * one IPI round trip, as far as the AP can influence it:
+ *
+ *  1. The LIMIT_DEBUG ceiling has been in the EB since INIT (and is re-sent
+ *     here if the EB lost it), so every EB-side DVFS decision is clamped.
+ *  2. POWER_CONTROL(on). The EB may come back already active, at whatever OPP
+ *     it last had (seen: OPP 0 after an idle); commit at once in that case.
+ *  3. Otherwise commit before ACTIVE (vendor reference skips commits while
+ *     DVFS_SLEEP is set; if this firmware records it instead, ACTIVE comes up
+ *     at the right OPP), then ACTIVE, then commit again.
+ *  4. Verify on the PLL and mux registers; if above max_freq_khz, log loudly
+ *     and commit the ceiling.
+ *
+ * @want_active false skips our ACTIVE reference. The EB may still turn
+ * active by itself once the GPU runs; that reference is the EB's and is
+ * never released from here.
+ */
+static int mt6897_eb_up_locked(struct mt6897_mfg *mfg, bool want_active, int idx,
+			       const char *who)
+{
+	struct mt6897_pwr p;
+	int ret;
+
+	lockdep_assert_held(&mfg->lock);
+
+	mt6897_ensure_limit_locked(mfg, who);
+
+	if (!mfg->eb_powered) {
+		ret = mt6897_power_control_locked(mfg, true, who);
+		if (ret)
+			return ret;
+	}
+	mfg->going_down = false;
+
+	mt6897_log_pwr(mfg, who, &p);
+	if (!p.mfg0_on || !p.mfg1_on) {
+		dev_err(mfg->dev, "[%s] EB acked power-on but MFG0/MFG1 are off\n", who);
+		return -EIO;
+	}
+	mt6897_log_freq(mfg, who);
+	mt6897_ensure_limit_locked(mfg, who);
+
+	if (mt6897_active_count(mfg) > 0) {
+		mfg_vinfo(mfg->dev, "[%s] EB came up active (active_count=%d) at OPP %d: committing %d now\n",
+			  who, mt6897_active_count(mfg), (int)gf_read(mfg, GF_CUR_OPPIDX_GPU), idx);
+		mt6897_commit_locked_quiet(mfg, idx, who);
+	} else if (want_active) {
+		mt6897_commit_locked_quiet(mfg, idx, who);	/* pre-active, see 3. */
+	}
+
+	if (want_active) {
+		ret = mt6897_active_locked(mfg, true, who);
+		if (ret)
+			return ret;
+	} else {
+		mfg_vinfo(mfg->dev, "[%s] not sending ACTIVE (auto_active=0), EB active_count=%d\n",
+			  who, mt6897_active_count(mfg));
+	}
+
+	if (want_active && mt6897_commit_verified_locked(mfg, idx, who))
+		dev_warn(mfg->dev, "[%s] OPP not confirmed yet, the verify work retries\n", who);
+	mt6897_check_cap_locked(mfg, who);
+	mt6897_log_freq(mfg, who);
+
+	/* re-check at ~20 ms, then every 200 ms, 5 times: covers self-activation */
+	mfg->seen_active = mt6897_active_count(mfg);
+	mfg->verify_left = 5;
+	mod_delayed_work(system_wq, &mfg->verify_work, msecs_to_jiffies(20));
+	return 0;
+}
+
+/* Idle (whatever the EB's count says), PDCA ack, POWER_CONTROL(off). */
+static int mt6897_eb_down_locked(struct mt6897_mfg *mfg, const char *who)
+{
+	u32 val;
+	int ret;
+
+	lockdep_assert_held(&mfg->lock);
+
+	/* from here on, no MFG PLL/mux reads (status, cap check, log_freq) */
+	mfg->going_down = true;
+	mfg_step(mfg, "%s: power-off sequence starts, EB active_count=%d", who,
+		 mt6897_active_count(mfg));
+
+	ret = mt6897_active_locked(mfg, false, who);
+	if (ret)
+		goto fail;
+
+	/*
+	 * The EB drops its own reference when it sees the GPU idle (the
+	 * consumer has suspended by now). Never power off under it.
+	 */
+	if (gf_read(mfg, GF_ACTIVE_SLEEP_CONTROL)) {
+		int cnt, waited;
+
+		mfg_step(mfg, "%s: wait for EB active_count 0 (now %d)", who, mt6897_active_count(mfg));
+		for (waited = 0; waited < 50 && (cnt = mt6897_active_count(mfg)) > 0; waited++)
+			usleep_range(1000, 1500);
+		cnt = mt6897_active_count(mfg);
+		if (cnt > 0) {
+			dev_err(mfg->dev, "[%s] EB still counts %d ACTIVE reference(s) (not ours) after ~50 ms: staying powered\n",
+				who, cnt);
+			ret = -EBUSY;
+			goto fail;
+		}
+		if (waited)
+			mfg_vinfo(mfg->dev, "[%s] EB dropped its own ACTIVE reference after ~%d ms\n",
+				  who, waited);
+	}
+
+	/* Vendor kbase: gpufreq_pdca_polling_ack(GPU_PWR_OFF) before power off */
+	mfg_step(mfg, "%s: poll PDCA_STA 0x13c620a8 bit16", who);
+	if (readl_poll_timeout(mfg->pdca, val, !(val & PDCA_STA_BUSY), 10, 10000))
+		dev_warn(mfg->dev, "[%s] PDCA_STA still busy (%08x) before power off\n", who, val);
+
+	ret = mt6897_power_control_locked(mfg, false, who);
+	if (ret)
+		goto fail;
+	mfg->our_active = 0;
+	mt6897_log_pwr(mfg, who, NULL);
+	return 0;
+fail:
+	/* still powered: readback allowed again */
+	mfg->going_down = !mfg->eb_powered;
+	return ret;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Stage C: genpd + clock                                                   */
 
@@ -646,32 +1306,42 @@ static inline struct mt6897_mfg *pd_to_mfg(struct generic_pm_domain *pd)
 	return container_of(pd, struct mt6897_mfg, pd);
 }
 
+/*
+ * genpd performance levels grow with performance (genpd aggregates with max
+ * and drops a suspended device to 0), EB OPP indices shrink with it. Level 0
+ * is therefore the slowest OPP: level = opp_num - 1 - index.
+ */
+static int mt6897_level_to_idx(struct mt6897_mfg *mfg, unsigned int level)
+{
+	int n = mt6897_opp_num(mfg);
+
+	return level >= n ? 0 : n - 1 - (int)level;
+}
+
 static int mt6897_pd_power_on(struct generic_pm_domain *pd)
 {
 	struct mt6897_mfg *mfg = pd_to_mfg(pd);
-	struct mt6897_pwr p;
 	int ret;
 
+	mfg_step(mfg, "genpd power_on: lock");
 	mutex_lock(&mfg->lock);
+	mfg_step(mfg, "genpd power_on: locked");
 	ret = mt6897_init_locked(mfg);
 	if (ret)
 		goto out;
 
-	ret = mt6897_power_control_locked(mfg, true, "C on");
-	if (ret)
-		goto out;
-
-	mt6897_log_pwr(mfg, "C on", &p);
-	if (!p.mfg0_on || !p.mfg1_on) {
-		dev_err(mfg->dev, "[C] EB acked power-on but MFG0/MFG1 are off: refusing to hand the GPU over\n");
-		ret = -EIO;
+	if (fix_oppidx >= 0) {
+		/* legacy fixed mode: power only, the EB holds the fixed OPP */
+		ret = mt6897_eb_up_locked(mfg, true, fix_oppidx, "C on");
+		if (!ret && !mfg->fix_applied) {
+			mfg->fix_applied = true;
+			mt6897_fix_opp_locked(mfg, fix_oppidx);
+		}
 		goto out;
 	}
 
-	if (fix_oppidx >= 0 && !mfg->fix_applied) {
-		mfg->fix_applied = true;
-		mt6897_fix_opp_locked(mfg, fix_oppidx);
-	}
+	/* the level genpd restored just before powering on, or the last one */
+	ret = mt6897_eb_up_locked(mfg, auto_active, mfg->target_idx, "C on");
 out:
 	mutex_unlock(&mfg->lock);
 	return ret;
@@ -680,43 +1350,61 @@ out:
 static int mt6897_pd_power_off(struct generic_pm_domain *pd)
 {
 	struct mt6897_mfg *mfg = pd_to_mfg(pd);
-	u32 val;
-	int ret;
+	int ret = 0;
 
 	if (!allow_power_off) {
 		dev_info_ratelimited(mfg->dev, "[C] power off skipped (allow_power_off=0)\n");
 		return 0;
 	}
 
+	mfg_step(mfg, "genpd power_off: cancel verify work");
+	cancel_delayed_work_sync(&mfg->verify_work);
+	mfg_step(mfg, "genpd power_off: lock");
 	mutex_lock(&mfg->lock);
-	if (!mfg->initialized) {
-		ret = 0;
-		goto out;
-	}
-
-	/* Vendor kbase: gpufreq_pdca_polling_ack(GPU_PWR_OFF) before power off */
-	if (readl_poll_timeout(mfg->pdca, val, !(val & PDCA_STA_BUSY), 10, 10000))
-		dev_warn(mfg->dev, "[C] PDCA_STA still busy (%08x) before power off\n", val);
-
-	ret = mt6897_power_control_locked(mfg, false, "C off");
-	if (!ret)
-		mt6897_log_pwr(mfg, "C off", NULL);
-out:
+	mfg_step(mfg, "genpd power_off: locked (powered=%d)", mfg->eb_powered);
+	if (mfg->initialized && mfg->eb_powered)
+		ret = mt6897_eb_down_locked(mfg, "C off");
 	mutex_unlock(&mfg->lock);
+	mfg_step(mfg, "genpd power_off: done %d", ret);
 	return ret;
 }
 
 static int mt6897_pd_set_perf_state(struct generic_pm_domain *pd, unsigned int state)
 {
-	/* Single fixed OPP: the EB keeps its own (or the fix_oppidx) setting. */
-	return 0;
+	struct mt6897_mfg *mfg = pd_to_mfg(pd);
+	int idx, ret = 0;
+
+	mfg_step(mfg, "genpd set_performance(%u): lock", state);
+	mutex_lock(&mfg->lock);
+	if (!mfg->initialized || fix_oppidx >= 0)
+		goto out;
+
+	idx = max(mt6897_level_to_idx(mfg, state), mt6897_ceil_idx(mfg));
+	mfg->target_idx = idx;
+
+	/*
+	 * genpd sets the level before power-on and after power-off; that is
+	 * only recorded and committed by mt6897_pd_power_on().
+	 */
+	if (!follow_devfreq || !mfg->eb_powered || pd->status != GENPD_STATE_ON ||
+	    !mt6897_is_active(mfg))
+		goto out;
+	if ((int)gf_read(mfg, GF_CUR_OPPIDX_GPU) == mt6897_clamped(mfg, idx))
+		goto out;
+
+	ret = mt6897_commit_verified_locked(mfg, idx, "C dvfs");
+	dev_info_ratelimited(mfg->dev, "[C dvfs] level %u -> OPP %d: %d, EB now %u kHz\n",
+			     state, idx, ret, gf_read(mfg, GF_CUR_FGPU));
+out:
+	mutex_unlock(&mfg->lock);
+	return ret;
 }
 
 static int mt6897_pd_attach_dev(struct generic_pm_domain *pd, struct device *dev)
 {
 	struct mt6897_mfg *mfg = pd_to_mfg(pd);
 	struct dev_pm_opp_data opp = {};
-	int idx, n, ret;
+	int i, idx, n, ceil, ret, added = 0;
 	u32 e[6];
 
 	mutex_lock(&mfg->lock);
@@ -725,26 +1413,71 @@ static int mt6897_pd_attach_dev(struct generic_pm_domain *pd, struct device *dev
 		goto out;
 
 	n = mt6897_opp_num(mfg);
-	idx = fix_oppidx >= 0 ? fix_oppidx : (int)gf_read(mfg, GF_CUR_OPPIDX_GPU);
-	if (!n || idx < 0 || idx >= n) {
-		dev_err(mfg->dev, "[C] no usable OPP (num %d, idx %d)\n", n, idx);
+	if (!n) {
+		dev_err(mfg->dev, "[C] EB OPP table is empty\n");
 		ret = -EINVAL;
 		goto out;
 	}
 
-	mt6897_read_opp(mfg, idx, e);
-	opp.freq = (unsigned long)e[0] * HZ_PER_KHZ;
-	opp.u_volt = e[1] * 10;
-	opp.level = idx;
-	ret = dev_pm_opp_add_dynamic(dev, &opp);
-	if (ret)
-		dev_err(mfg->dev, "[C] cannot add OPP to %s: %pe\n", dev_name(dev), ERR_PTR(ret));
-	else
-		dev_info(mfg->dev, "[C] %s: single OPP %lu Hz (EB index %d, %lu uV, informational)\n",
-			 dev_name(dev), opp.freq, idx, opp.u_volt);
+	if (fix_oppidx >= 0) {
+		/* fixed mode: one OPP, the EB holds it (CMD_FIX_TARGET_OPPIDX) */
+		idx = min(fix_oppidx, n - 1);
+		mt6897_read_opp(mfg, idx, e);
+		opp.freq = (unsigned long)e[0] * HZ_PER_KHZ;
+		opp.u_volt = e[1] * 10;
+		opp.level = n - 1 - idx;
+		ret = dev_pm_opp_add_dynamic(dev, &opp);
+		dev_info(mfg->dev, "[C] %s: fixed OPP %lu Hz (EB index %d): %d\n",
+			 dev_name(dev), opp.freq, idx, ret);
+		goto out;
+	}
+
+	/* OPPs from the max_freq_khz ceiling down to the slowest one */
+	ceil = mt6897_ceil_idx(mfg);
+	for (i = n - 1; i >= ceil; i--) {
+		mt6897_read_opp(mfg, i, e);
+		opp.freq = (unsigned long)e[0] * HZ_PER_KHZ;
+		opp.u_volt = e[1] * 10;	/* informational: the EB applies it */
+		opp.level = n - 1 - i;
+		ret = dev_pm_opp_add_dynamic(dev, &opp);
+		if (ret) {
+			dev_err(mfg->dev, "[C] cannot add OPP %d (%lu Hz) to %s: %pe\n",
+				i, opp.freq, dev_name(dev), ERR_PTR(ret));
+			dev_pm_opp_remove_all_dynamic(dev);
+			goto out;
+		}
+		added++;
+	}
+	mfg->target_idx = n - 1;
+	mt6897_read_opp(mfg, ceil, e);
+	dev_info(mfg->dev, "[C] %s: %d OPPs, EB index %d..%d, max %u kHz (max_freq_khz=%u)\n",
+		 dev_name(dev), added, n - 1, ceil, e[0], max_freq_khz);
 out:
 	mutex_unlock(&mfg->lock);
 	return ret;
+}
+
+/*
+ * genpd calls start() right before the consumer's runtime_resume and stop()
+ * right after its runtime_suspend. Logging only: tells a death inside
+ * panthor's suspend/resume apart from one in this driver.
+ */
+static int mt6897_pd_dev_start(struct device *dev)
+{
+	struct mt6897_mfg *mfg = READ_ONCE(mt6897_the_mfg);
+
+	if (mfg)
+		mfg_step(mfg, "consumer %s: runtime resume starts", dev_name(dev));
+	return 0;
+}
+
+static int mt6897_pd_dev_stop(struct device *dev)
+{
+	struct mt6897_mfg *mfg = READ_ONCE(mt6897_the_mfg);
+
+	if (mfg)
+		mfg_step(mfg, "consumer %s: runtime suspend finished", dev_name(dev));
+	return 0;
 }
 
 static void mt6897_pd_detach_dev(struct generic_pm_domain *pd, struct device *dev)
@@ -805,6 +1538,9 @@ static ssize_t b_power_write(struct mt6897_mfg *mfg, size_t len, bool on)
 	struct mt6897_pwr p;
 	int ret;
 
+	if (!on && !mt6897_genpd_in_use(mfg))
+		cancel_delayed_work_sync(&mfg->verify_work);
+	mfg_step(mfg, "%s: lock", who);
 	mutex_lock(&mfg->lock);
 	if (!mfg->initialized) {
 		dev_err(mfg->dev, "[%s] run a1_init first\n", who);
@@ -821,12 +1557,26 @@ static ssize_t b_power_write(struct mt6897_mfg *mfg, size_t len, bool on)
 		ret = -EPERM;
 		goto out;
 	}
+	if (on && mfg->eb_powered) {
+		dev_err(mfg->dev, "[%s] already powered\n", who);
+		ret = -EALREADY;
+		goto out;
+	}
 
 	dev_info(mfg->dev, "[%s] start\n", who);
 	mt6897_log_shared(mfg, who);
 	mt6897_log_pwr(mfg, who, NULL);
 
-	ret = mt6897_power_control_locked(mfg, on, who);
+	/*
+	 * On: POWER only, no ACTIVE of ours. With nothing running on the GPU
+	 * the EB stays idle (26 MHz, DVFS frozen): the state for testing
+	 * commits without ACTIVE. Off: release our reference, wait for the
+	 * EB's own one to go, POWER off.
+	 */
+	if (on)
+		ret = mt6897_eb_up_locked(mfg, false, mt6897_opp_num(mfg) - 1, who);
+	else
+		ret = mt6897_eb_down_locked(mfg, who);
 	if (ret)
 		goto out;
 
@@ -843,6 +1593,7 @@ static ssize_t b_power_write(struct mt6897_mfg *mfg, size_t len, bool on)
 		else
 			dev_err(mfg->dev, "[B on] EB acked but MFG0/MFG1 not on: NOT touching Mali registers\n");
 	}
+	mt6897_log_freq(mfg, who);
 	dev_info(mfg->dev, "[%s] done\n", who);
 out:
 	mutex_unlock(&mfg->lock);
@@ -881,6 +1632,105 @@ static ssize_t fix_opp_write(struct file *f, const char __user *ubuf, size_t len
 	return ret ? ret : len;
 }
 
+/* Common checks for the manual DVFS triggers: initialised and powered by us. */
+static int mt6897_manual_ok(struct mt6897_mfg *mfg, const char *who)
+{
+	if (!mfg->initialized) {
+		dev_err(mfg->dev, "[%s] run a1_init first\n", who);
+		return -EPERM;
+	}
+	if (!mfg->eb_powered) {
+		dev_err(mfg->dev, "[%s] GPU not powered (b_power_on, or keep panthor resumed)\n", who);
+		return -EPERM;
+	}
+	if (mt6897_genpd_in_use(mfg) && mfg->pd.status != GENPD_STATE_ON) {
+		dev_err(mfg->dev, "[%s] power domain is off\n", who);
+		return -EPERM;
+	}
+	return 0;
+}
+
+static ssize_t active_write(struct file *f, const char __user *ubuf, size_t len, loff_t *ppos)
+{
+	struct mt6897_mfg *mfg = f->private_data;
+	bool active;
+	int ret;
+
+	ret = kstrtobool_from_user(ubuf, len, &active);
+	if (ret)
+		return ret;
+
+	mutex_lock(&mfg->lock);
+	ret = mt6897_manual_ok(mfg, "active");
+	if (!ret && !active && mt6897_genpd_in_use(mfg) && !force) {
+		dev_err(mfg->dev, "[active] refusing to idle the EB under a running consumer (power domain on); set force=1 to override\n");
+		ret = -EBUSY;
+	}
+	if (!ret) {
+		dev_info(mfg->dev, "[active] request %s (currently %s)\n",
+			 active ? "active" : "idle", mt6897_active_count(mfg) > 0 ? "active" : "idle");
+		mt6897_log_freq(mfg, "active before");
+		ret = mt6897_active_locked(mfg, active, "active");
+		mt6897_log_freq(mfg, "active after");
+	}
+	mutex_unlock(&mfg->lock);
+	return ret ? ret : len;
+}
+
+static ssize_t commit_write(struct file *f, const char __user *ubuf, size_t len, loff_t *ppos)
+{
+	struct mt6897_mfg *mfg = f->private_data;
+	int idx, ret;
+
+	ret = kstrtoint_from_user(ubuf, len, 0, &idx);
+	if (ret)
+		return ret;
+
+	mutex_lock(&mfg->lock);
+	ret = mt6897_manual_ok(mfg, "commit");
+	if (!ret && (idx < 0 || idx >= mt6897_opp_num(mfg)))
+		ret = -EINVAL;
+	if (!ret) {
+		if (mt6897_genpd_in_use(mfg) && follow_devfreq)
+			dev_warn(mfg->dev, "[commit] devfreq is also committing (follow_devfreq=1)\n");
+		dev_info(mfg->dev, "[commit] request OPP %d\n", idx);
+		mt6897_log_freq(mfg, "commit before");
+		ret = mt6897_commit_locked(mfg, idx, "commit");
+		mt6897_log_freq(mfg, "commit after");
+	}
+	mutex_unlock(&mfg->lock);
+	return ret ? ret : len;
+}
+
+static ssize_t limit_write(struct file *f, const char __user *ubuf, size_t len, loff_t *ppos)
+{
+	struct mt6897_mfg *mfg = f->private_data;
+	int idx, ret;
+
+	ret = kstrtoint_from_user(ubuf, len, 0, &idx);
+	if (ret)
+		return ret;
+
+	mutex_lock(&mfg->lock);
+	if (!mfg->initialized) {
+		ret = -EPERM;
+	} else if (idx < -1 || idx >= mt6897_opp_num(mfg)) {
+		ret = -EINVAL;
+	} else if (!allow_above_cap &&
+		   (idx == -1 || idx < mt6897_idx_for_khz(mfg, MT6897_HARD_CAP_KHZ))) {
+		dev_err(mfg->dev, "[limit] %d is above the %u kHz cap; set allow_above_cap=1 first\n",
+			idx, MT6897_HARD_CAP_KHZ);
+		ret = -EPERM;
+	} else {
+		dev_info(mfg->dev, "[limit] request LIMIT_DEBUG ceiling %d\n", idx);
+		mt6897_log_freq(mfg, "limit before");
+		ret = mt6897_set_limit_locked(mfg, idx, "limit");
+		mt6897_log_freq(mfg, "limit after");
+	}
+	mutex_unlock(&mfg->lock);
+	return ret ? ret : len;
+}
+
 static int status_show(struct seq_file *s, void *unused)
 {
 	struct mt6897_mfg *mfg = s->private;
@@ -894,6 +1744,39 @@ static int status_show(struct seq_file *s, void *unused)
 	mt6897_read_pwr(mfg, &p);
 	seq_printf(s, "spm=%08x/%08x rpc=%08x/%08x mfg1_con=%08x pdca=%08x mfg0=%d mfg1=%d\n",
 		   p.spm, p.spm2, p.rpc, p.rpc2, p.mfg1_con, p.pdca, p.mfg0_on, p.mfg1_on);
+	seq_printf(s, "our_active=%d ", mfg->our_active);
+	seq_printf(s, "eb_powered=%d eb_active_count=%d target_idx=%d last_commit=%d max_freq_khz=%u ceil_idx=%d allow_above_cap=%d\n",
+		   mfg->eb_powered, mt6897_active_count(mfg), mfg->target_idx, mfg->last_commit,
+		   max_freq_khz, mfg->initialized ? mt6897_ceil_idx(mfg) : -1, allow_above_cap);
+	seq_printf(s, "limit: ours(LIMIT_DEBUG)=%d eb_ceiling=%d c_limiter=%u c_prio=%u eb_floor=%d f_limiter=%u f_prio=%u",
+		   mfg->eb_limit, (int)gf_read(mfg, GF_CUR_CEILING), gf_read(mfg, GF_CUR_C_LIMITER),
+		   gf_read(mfg, GF_CUR_C_PRIORITY), (int)gf_read(mfg, GF_CUR_FLOOR),
+		   gf_read(mfg, GF_CUR_F_LIMITER), gf_read(mfg, GF_CUR_F_PRIORITY));
+	for (i = 0; i < LIMIT_NUM; i++) {
+		unsigned int off = GF_LIMIT_TABLE + i * GF_LIMIT_ENTRY_SIZE;
+		int c = gf_read(mfg, off + GF_LIMIT_CEILING), f = gf_read(mfg, off + GF_LIMIT_FLOOR);
+
+		if (c != GPUPPM_DEFAULT_IDX || f != GPUPPM_DEFAULT_IDX)
+			seq_printf(s, " [%u:c%d,f%d]", i, c, f);
+	}
+	seq_puts(s, "\n");
+	seq_printf(s, "opp_idx=%d fgpu=%u fstack=%u vgpu=%u vsram=%u power_mw=%u active_count=%d power_count=%d dvfs_state=%#x active_sleep_control=%u\n",
+		   (int)gf_read(mfg, GF_CUR_OPPIDX_GPU), gf_read(mfg, GF_CUR_FGPU),
+		   gf_read(mfg, GF_CUR_FSTACK), gf_read(mfg, GF_CUR_VGPU),
+		   gf_read(mfg, GF_CUR_VSRAM_GPU), gf_read(mfg, GF_CUR_POWER_GPU),
+		   (int)gf_read(mfg, GF_ACTIVE_COUNT), (int)gf_read(mfg, GF_POWER_COUNT),
+		   gf_read(mfg, GF_DVFS_STATE), gf_read(mfg, GF_ACTIVE_SLEEP_CONTROL));
+	if (mt6897_mfg_readable(mfg, &p)) {
+		u32 c1 = readl(mfg->mfgpll_con1), c2 = readl(mfg->mfgscpll_con1);
+		u32 sel = readl(mfg->topck_cfg30);
+
+		seq_printf(s, "hw: mfgpll_con1=%08x (%u kHz) mfgscpll_con1=%08x (%u kHz) topck_cfg30=%08x mfg_mux=%s mfgsc_mux=%s\n",
+			   c1, mt6897_pll_khz(c1), c2, mt6897_pll_khz(c2), sel,
+			   (sel & TOPCK_MFG_SEL_PLL) ? "pll" : "26m",
+			   (sel & TOPCK_MFGSC_SEL_PLL) ? "pll" : "26m");
+	} else {
+		seq_puts(s, "hw: not read (not powered by us, powering down, MFG1 off, or not described)\n");
+	}
 	seq_puts(s, "gpr:");
 	for (i = 0; i < GPR_NUM; i++)
 		seq_printf(s, " %08x", readl(mfg->gpr + i * 4));
@@ -923,6 +1806,9 @@ WO_FOPS(a1_init);
 WO_FOPS(b_power_on);
 WO_FOPS(b_power_off);
 WO_FOPS(fix_opp);
+WO_FOPS(active);
+WO_FOPS(commit);
+WO_FOPS(limit);
 
 static void mt6897_debugfs_init(struct mt6897_mfg *mfg)
 {
@@ -931,7 +1817,48 @@ static void mt6897_debugfs_init(struct mt6897_mfg *mfg)
 	debugfs_create_file("b_power_on", 0200, mfg->dbg, mfg, &b_power_on_fops);
 	debugfs_create_file("b_power_off", 0200, mfg->dbg, mfg, &b_power_off_fops);
 	debugfs_create_file("fix_opp", 0200, mfg->dbg, mfg, &fix_opp_fops);
+	debugfs_create_file("active", 0200, mfg->dbg, mfg, &active_fops);
+	debugfs_create_file("commit", 0200, mfg->dbg, mfg, &commit_fops);
+	debugfs_create_file("limit", 0200, mfg->dbg, mfg, &limit_fops);
 	debugfs_create_file("status", 0400, mfg->dbg, mfg, &status_fops);
+}
+
+/* ------------------------------------------------------------------------ */
+/* max_freq_khz runtime changes                                             */
+
+static int max_freq_khz_set(const char *val, const struct kernel_param *kp)
+{
+	struct mt6897_mfg *mfg = READ_ONCE(mt6897_the_mfg);
+	unsigned int khz;
+	int ret, ceil;
+
+	ret = kstrtouint(val, 0, &khz);
+	if (ret)
+		return ret;
+	if (khz > MT6897_HARD_CAP_KHZ && !allow_above_cap) {
+		pr_warn("mtk_mfg_mt6897: max_freq_khz %u above the %u kHz cap needs allow_above_cap=1\n",
+			khz, MT6897_HARD_CAP_KHZ);
+		return -EINVAL;
+	}
+	max_freq_khz = khz;
+
+	if (!mfg)
+		return 0;	/* boot parameter: applied at A1 */
+
+	mfg_step(mfg, "max_freq_khz=%u: lock", khz);
+	mutex_lock(&mfg->lock);
+	if (mfg->initialized) {
+		ceil = mt6897_ceil_idx(mfg);
+		dev_info(mfg->dev, "[cap] max_freq_khz=%u -> ceiling OPP %d\n", khz, ceil);
+		ret = mt6897_set_limit_locked(mfg, ceil, "cap");
+		if (mfg->eb_powered && mt6897_is_active(mfg) &&
+		    (int)gf_read(mfg, GF_CUR_OPPIDX_GPU) < ceil)
+			mt6897_commit_locked_quiet(mfg, ceil, "cap");
+		if (mfg->eb_powered)
+			mt6897_check_cap_locked(mfg, "cap");
+	}
+	mutex_unlock(&mfg->lock);
+	return ret;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -962,6 +1889,7 @@ static int mt6897_mfg_probe(struct platform_device *pdev)
 	mfg->dev = dev;
 	mutex_init(&mfg->lock);
 	init_completion(&mfg->rx_done);
+	INIT_DELAYED_WORK(&mfg->verify_work, mt6897_verify_work);
 	platform_set_drvdata(pdev, mfg);
 
 	mfg->gpr = mt6897_map(pdev, "gpr");
@@ -974,6 +1902,20 @@ static int mt6897_mfg_probe(struct platform_device *pdev)
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "gpu");
 	if (res)
 		mfg->gpu_res = *res;
+
+	/* optional read-only clock readback; only read while MFG1 is on */
+	mfg->mfgpll_con1 = mt6897_map(pdev, "mfgpll-con1");
+	mfg->mfgscpll_con1 = mt6897_map(pdev, "mfgscpll-con1");
+	mfg->topck_cfg30 = mt6897_map(pdev, "topck-mfg-sel");
+	if (IS_ERR(mfg->mfgpll_con1) || IS_ERR(mfg->mfgscpll_con1) || IS_ERR(mfg->topck_cfg30)) {
+		dev_info(dev, "[A] no PLL/mux readback registers described\n");
+		mfg->mfgpll_con1 = NULL;
+		mfg->mfgscpll_con1 = NULL;
+		mfg->topck_cfg30 = NULL;
+	}
+	mfg->target_idx = 0;
+	mfg->last_commit = -1;
+	mfg->eb_limit = -1;
 
 	ret = of_reserved_mem_region_to_resource(dev->of_node, 0, &shm);
 	if (ret)
@@ -1014,6 +1956,8 @@ static int mt6897_mfg_probe(struct platform_device *pdev)
 	mfg->pd.set_performance_state = mt6897_pd_set_perf_state;
 	mfg->pd.attach_dev = mt6897_pd_attach_dev;
 	mfg->pd.detach_dev = mt6897_pd_detach_dev;
+	mfg->pd.dev_ops.start = mt6897_pd_dev_start;
+	mfg->pd.dev_ops.stop = mt6897_pd_dev_stop;
 	mfg->pd.flags = GENPD_FLAG_OPP_TABLE_FW;
 	ret = pm_genpd_init(&mfg->pd, NULL, true);
 	if (ret)
@@ -1025,6 +1969,7 @@ static int mt6897_mfg_probe(struct platform_device *pdev)
 	}
 
 	mt6897_debugfs_init(mfg);
+	WRITE_ONCE(mt6897_the_mfg, mfg);
 	dev_info(dev, "[A] ready: triggers in /sys/kernel/debug/mt6897_gpu/\n");
 	return 0;
 }

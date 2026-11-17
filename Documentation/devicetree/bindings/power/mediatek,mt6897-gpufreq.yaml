@@ -30,6 +30,9 @@ properties:
       - description: SPM XPU_PWR_STATUS and XPU_PWR_STATUS_2ND
       - description: GPUEB mailbox PDCA status register
       - description: first page of the GPU registers, read for identification
+      - description: MFG_PLL_CON1, read for frequency readback
+      - description: MFGSC_PLL_CON1, read for frequency readback
+      - description: TOPCKGEN CLK_CFG_30 (MFG mux select), read only
 
   reg-names:
     minItems: 4
@@ -39,6 +42,9 @@ properties:
       - const: spm-status
       - const: pdca-sta
       - const: gpu
+      - const: mfgpll-con1
+      - const: mfgscpll-con1
+      - const: topck-mfg-sel
 
   mboxes:
     maxItems: 11
