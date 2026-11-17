@@ -74,7 +74,15 @@ struct mtk_gpueb_mbox_chan_desc {
 	const u8 rx_len;
 };
 
+/**
+ * struct mtk_gpueb_mbox_variant - per-SoC mailbox description
+ * @clk_optional: the EB clock is not described on this SoC; on MT6897 the
+ *                bootloader starts the GPUEB and the AP never gates its clock
+ * @num_channels: number of entries in @channels
+ * @channels: channel layout, index == hardware IRQ bit
+ */
 struct mtk_gpueb_mbox_variant {
+	const bool clk_optional;
 	const u8 num_channels;
 	const struct mtk_gpueb_mbox_chan_desc channels[] __counted_by(num_channels);
 };
@@ -224,7 +232,10 @@ static int mtk_gpueb_mbox_probe(struct platform_device *pdev)
 	if (ebm->irq < 0)
 		return ebm->irq;
 
-	ebm->clk = devm_clk_get_prepared(ebm->dev, NULL);
+	if (ebm->v->clk_optional)
+		ebm->clk = devm_clk_get_optional_prepared(ebm->dev, NULL);
+	else
+		ebm->clk = devm_clk_get_prepared(ebm->dev, NULL);
 	if (IS_ERR(ebm->clk))
 		return dev_err_probe(ebm->dev, PTR_ERR(ebm->clk),
 				     "Failed to get 'eb' clock\n");
@@ -299,7 +310,38 @@ static const struct mtk_gpueb_mbox_variant mtk_gpueb_mbox_mt8196 = {
 	},
 };
 
+/*
+ * MT6897 layout, derived from the vendor DT of the device (gpueb@13c00000,
+ * mbox-size = 0xa0 slots, slot-size = 4 bytes, one mailbox). The vendor
+ * tinysys driver (gpueb_mbox_setup_pin_table()) packs all send pins first, in
+ * table order, then all receive pins, each pin taking msg_size slots:
+ *
+ *   send sizes (slots): 4 8 3 6 9 4 6 6 1 4 3      -> 54 slots = 0xd8 bytes
+ *   recv sizes (slots): 4 8 1 1 1 4 1 6 4 1 3      -> starts at 0xd8
+ *
+ * Differences from MT8196: "brisket" sends 3 slots (12 bytes) instead of 4,
+ * and there is no "ppb" channel, so every receive offset is 8 bytes lower.
+ */
+static const struct mtk_gpueb_mbox_variant mtk_gpueb_mbox_mt6897 = {
+	.clk_optional = true,
+	.num_channels = 11,
+	.channels = {
+		{ "fast-dvfs-event", 0, 0x0000, 16, 0x00d8, 16 },
+		{ "gpufreq",         1, 0x0010, 32, 0x00e8, 32 },
+		{ "sleep",           2, 0x0030, 12, 0x0108,  4 },
+		{ "timer",           3, 0x003c, 24, 0x010c,  4 },
+		{ "fhctl",           4, 0x0054, 36, 0x0110,  4 },
+		{ "ccf",             5, 0x0078, 16, 0x0114, 16 },
+		{ "gpumpu",          6, 0x0088, 24, 0x0124,  4 },
+		{ "fast-dvfs",       7, 0x00a0, 24, 0x0128, 24 },
+		{ "ipir-c-met",      8, 0x00b8,  4, 0x0140, 16 },
+		{ "ipis-c-met",      9, 0x00bc, 16, 0x0150,  4 },
+		{ "brisket",        10, 0x00cc, 12, 0x0154, 12 },
+	},
+};
+
 static const struct of_device_id mtk_gpueb_mbox_of_ids[] = {
+	{ .compatible = "mediatek,mt6897-gpueb-mbox", .data = &mtk_gpueb_mbox_mt6897 },
 	{ .compatible = "mediatek,mt8196-gpueb-mbox", .data = &mtk_gpueb_mbox_mt8196 },
 	{ /* Sentinel */ }
 };
