@@ -43,6 +43,23 @@ config MTK_MFG_PM_DOMAIN
 	  This driver is required for the Mali GPU to work at all on MT8196 and
 	  MT6991.
 
+config MTK_MFG_MT6897_PM_DOMAIN
+	bool "MediaTek MT6897 MFlexGraphics power domain (GPUEB)"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on PM
+	depends on OF
+	depends on COMMON_CLK
+	select MAILBOX
+	select PM_GENERIC_DOMAINS
+	imply MTK_GPUEB_MBOX
+	help
+	  Power domain and read-only GPU clock for the Mali GPU of the MediaTek
+	  MT6897 (Dimensity 8300). The GPUEB co-processor, started by the
+	  bootloader, does all GPU power sequencing; this driver only sends it
+	  IPI commands. It never controls regulators or PLLs itself.
+
+	  Bring-up triggers are exposed in debugfs under mt6897_gpu/.
+
 config AIROHA_CPU_PM_DOMAIN
 	tristate "Airoha CPU power domain"
 	default ARCH_AIROHA
