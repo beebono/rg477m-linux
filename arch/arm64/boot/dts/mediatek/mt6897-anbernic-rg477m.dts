@@ -835,12 +835,17 @@
 
 			trips {
 				medium_core4_1_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				medium_core4_1_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				medium_core4_1_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -863,8 +868,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&medium_core4_1_fan_high>;
+					trip = <&medium_core4_1_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&medium_core4_1_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -876,12 +885,17 @@
 
 			trips {
 				medium_core4_2_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				medium_core4_2_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				medium_core4_2_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -904,8 +918,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&medium_core4_2_fan_high>;
+					trip = <&medium_core4_2_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&medium_core4_2_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -917,12 +935,17 @@
 
 			trips {
 				medium_core5_1_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				medium_core5_1_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				medium_core5_1_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -945,8 +968,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&medium_core5_1_fan_high>;
+					trip = <&medium_core5_1_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&medium_core5_1_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -958,12 +985,17 @@
 
 			trips {
 				medium_core5_2_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				medium_core5_2_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				medium_core5_2_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -986,8 +1018,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&medium_core5_2_fan_high>;
+					trip = <&medium_core5_2_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&medium_core5_2_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -999,12 +1035,17 @@
 
 			trips {
 				little_core2_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				little_core2_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				little_core2_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1027,8 +1068,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&little_core2_fan_high>;
+					trip = <&little_core2_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&little_core2_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1040,12 +1085,17 @@
 
 			trips {
 				little_core3_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				little_core3_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				little_core3_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1068,8 +1118,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&little_core3_fan_high>;
+					trip = <&little_core3_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&little_core3_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1081,12 +1135,17 @@
 
 			trips {
 				medium_core6_1_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				medium_core6_1_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				medium_core6_1_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1109,8 +1168,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&medium_core6_1_fan_high>;
+					trip = <&medium_core6_1_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&medium_core6_1_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1122,12 +1185,17 @@
 
 			trips {
 				medium_core6_2_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				medium_core6_2_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				medium_core6_2_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1150,8 +1218,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&medium_core6_2_fan_high>;
+					trip = <&medium_core6_2_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&medium_core6_2_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1163,12 +1235,17 @@
 
 			trips {
 				dsu1_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				dsu1_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				dsu1_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1191,8 +1268,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&dsu1_fan_high>;
+					trip = <&dsu1_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&dsu1_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1204,12 +1285,17 @@
 
 			trips {
 				little_core0_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				little_core0_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				little_core0_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1232,8 +1318,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&little_core0_fan_high>;
+					trip = <&little_core0_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&little_core0_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1245,12 +1335,17 @@
 
 			trips {
 				little_core1_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				little_core1_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				little_core1_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1273,8 +1368,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&little_core1_fan_high>;
+					trip = <&little_core1_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&little_core1_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1286,12 +1385,17 @@
 
 			trips {
 				dsu2_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				dsu2_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				dsu2_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1314,8 +1418,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&dsu2_fan_high>;
+					trip = <&dsu2_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&dsu2_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1327,12 +1435,17 @@
 
 			trips {
 				big_core7_1_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				big_core7_1_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				big_core7_1_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1355,8 +1468,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&big_core7_1_fan_high>;
+					trip = <&big_core7_1_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&big_core7_1_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1368,12 +1485,17 @@
 
 			trips {
 				big_core7_2_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				big_core7_2_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				big_core7_2_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1396,8 +1518,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&big_core7_2_fan_high>;
+					trip = <&big_core7_2_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&big_core7_2_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1409,12 +1535,17 @@
 
 			trips {
 				dsu3_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				dsu3_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				dsu3_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1437,8 +1568,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&dsu3_fan_high>;
+					trip = <&dsu3_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&dsu3_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1450,12 +1585,17 @@
 
 			trips {
 				dsu4_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 				dsu4_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				dsu4_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1478,8 +1618,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&dsu4_fan_high>;
+					trip = <&dsu4_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&dsu4_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1496,7 +1640,12 @@
 
 			trips {
 				soc_top1_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				soc_top1_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1506,7 +1655,7 @@
 					type = "active";
 				};
 				soc_top1_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
@@ -1522,8 +1671,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&soc_top1_fan_high>;
+					trip = <&soc_top1_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&soc_top1_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1540,7 +1693,12 @@
 
 			trips {
 				soc_bot1_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				soc_bot1_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1550,7 +1708,7 @@
 					type = "active";
 				};
 				soc_bot1_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
@@ -1566,8 +1724,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&soc_bot1_fan_high>;
+					trip = <&soc_bot1_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&soc_bot1_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1585,7 +1747,12 @@
 
 			trips {
 				gpu0_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				gpu0_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1595,7 +1762,7 @@
 					type = "active";
 				};
 				gpu0_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
@@ -1611,8 +1778,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&gpu0_fan_high>;
+					trip = <&gpu0_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&gpu0_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1630,7 +1801,12 @@
 
 			trips {
 				gpu1_fan_low: trip-fan-low {
-					temperature = <70000>;
+					temperature = <65000>;
+					hysteresis = <5000>;
+					type = "active";
+				};
+				gpu1_fan_mid: trip-fan-mid {
+					temperature = <75000>;
 					hysteresis = <5000>;
 					type = "active";
 				};
@@ -1640,7 +1816,7 @@
 					type = "active";
 				};
 				gpu1_passive: trip-passive {
-					temperature = <95000>;
+					temperature = <90000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
@@ -1656,8 +1832,12 @@
 					cooling-device = <&fan 1 1>;
 				};
 				map2 {
-					trip = <&gpu1_fan_high>;
+					trip = <&gpu1_fan_mid>;
 					cooling-device = <&fan 2 2>;
+				};
+				map3 {
+					trip = <&gpu1_fan_high>;
+					cooling-device = <&fan 3 3>;
 				};
 			};
 		};
@@ -1715,8 +1895,10 @@
  * Cooling fan. PWM channel 0 on GPIO115 (already muxed by the bootloader),
  * supply switch on GPIO4. The vendor driver programs the high time as
  * (256 - level), i.e. the fan runs faster the longer the line is low, so the
- * levels below are inverted: 255 = stopped, 96 = vendor "cool" (160),
- * 1 = vendor "max" (255). Thresholds follow the vendor policy: 70 and 85 degC.
+ * levels below are inverted: 255 = stopped, 160 = a low step of our own
+ * (vendor 96), 96 = vendor "cool" (160), 1 = vendor "max" (255). The fan
+ * steps up at 65, 75 and 85 degC and the zones throttle at 90 degC; the
+ * vendor policy has only the two upper steps, at 70 and 85 degC.
  */
 / {
 	fan_vcc: regulator-fan-vcc {
@@ -1730,7 +1912,7 @@
 		compatible = "pwm-fan";
 		pwms = <&pwm 0 40000>;
 		fan-supply = <&fan_vcc>;
-		cooling-levels = <255 96 1>;
+		cooling-levels = <255 160 96 1>;
 		#cooling-cells = <2>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&fan_pins_default>;
