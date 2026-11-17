@@ -1895,8 +1895,8 @@
  * Cooling fan. PWM channel 0 on GPIO115 (already muxed by the bootloader),
  * supply switch on GPIO4. The vendor driver programs the high time as
  * (256 - level), i.e. the fan runs faster the longer the line is low, so the
- * levels below are inverted: 255 = stopped, 160 = a low step of our own
- * (vendor 96), 96 = vendor "cool" (160), 1 = vendor "max" (255). The fan
+ * levels below are inverted: 255 = stopped, 128 = a low step of our own
+ * (vendor 128), 96 = vendor "cool" (160), 1 = vendor "max" (255). The fan
  * steps up at 65, 75 and 85 degC and the zones throttle at 90 degC; the
  * vendor policy has only the two upper steps, at 70 and 85 degC.
  */
@@ -1912,7 +1912,7 @@
 		compatible = "pwm-fan";
 		pwms = <&pwm 0 40000>;
 		fan-supply = <&fan_vcc>;
-		cooling-levels = <255 160 96 1>;
+		cooling-levels = <255 128 96 1>;
 		#cooling-cells = <2>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&fan_pins_default>;
