@@ -45,6 +45,11 @@
 # lld arm/aarch64/mips thunks
 / __[[:alnum:]]*Thunk_/d
 
+# lld Cortex-A53 erratum 843419 patch sections (--fix-cortex-a53-843419).
+# They are named after their own address, which moves between the kallsyms
+# link passes, so keeping them makes the kallsyms data inconsistent.
+/ __CortexA53843419_/d
+
 # CFI type identifiers
 / __kcfi_typeid_/d
 / __kvm_nvhe___kcfi_typeid_/d
