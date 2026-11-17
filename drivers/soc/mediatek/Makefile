@@ -8,6 +8,7 @@ obj-$(CONFIG_MTK_REGULATOR_COUPLER) += mtk-regulator-coupler.o
 obj-$(CONFIG_MTK_SCPSYS_MT6895) += mtk-scpsys.o mtk-scpsys-mt6895.o \
 				   mtk-scpsys-bringup.o \
 				   mtk-pm-domain-disable-unused.o
+obj-$(CONFIG_MTK_MCUPM_MT6897) += mtk-mcupm-mt6897.o
 obj-$(CONFIG_MTK_MMSYS) += mtk-mmsys.o
 obj-$(CONFIG_MTK_MMSYS) += mtk-mutex.o
 obj-$(CONFIG_MTK_SVS) += mtk-svs.o

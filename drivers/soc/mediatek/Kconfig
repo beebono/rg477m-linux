@@ -91,6 +91,15 @@ config MTK_SCPSYS_MT6895
 	  domain framework (DISP, DISP1, MM_INFRA, ...). Required by the
 	  display SMI/IOMMU/GCE subsystem on the Dimensity 8100 (xaga).
 
+config MTK_MCUPM_MT6897
+	tristate "MediaTek MT6897 MCUPM bring-up client"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on MAILBOX
+	help
+	  Sends the vendor's MCUPM platform IPI and timesync at probe (each
+	  switchable) and logs the MCUPM/ATF CPU power-management state
+	  words, to bring up PSCI CPU idle states on the MT6897.
+
 config MTK_MMSYS
 	tristate "MediaTek MMSYS Support"
 	default ARCH_MEDIATEK
