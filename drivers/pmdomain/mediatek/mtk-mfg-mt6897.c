@@ -365,6 +365,8 @@ struct mt6897_mfg {
 	 * never ours to release (boot 75: releasing it killed the SoC).
 	 */
 	int our_active;
+	/* GPU devices attached (the LVTS block in the domain is not counted) */
+	unsigned int gpu_consumers;
 	int seen_active;		/* last logged EB active_count */
 
 	/*
@@ -1305,6 +1307,10 @@ static inline struct mt6897_mfg *pd_to_mfg(struct generic_pm_domain *pd)
 {
 	return container_of(pd, struct mt6897_mfg, pd);
 }
+static bool mt6897_is_gpu(struct device *dev)
+{
+	return dev->of_node && of_device_is_compatible(dev->of_node, "arm,mali-valhall-csf");
+}
 
 /*
  * genpd performance levels grow with performance (genpd aggregates with max
@@ -1412,6 +1418,13 @@ static int mt6897_pd_attach_dev(struct generic_pm_domain *pd, struct device *dev
 	if (ret)
 		goto out;
 
+	/* other blocks in the domain (the GPU's LVTS controller) get no OPPs */
+	if (!mt6897_is_gpu(dev)) {
+		dev_info(mfg->dev, "[C] %s attached (no OPP table: not the GPU)\n", dev_name(dev));
+		goto out;
+	}
+	mfg->gpu_consumers++;
+
 	n = mt6897_opp_num(mfg);
 	if (!n) {
 		dev_err(mfg->dev, "[C] EB OPP table is empty\n");
@@ -1482,7 +1495,15 @@ static int mt6897_pd_dev_stop(struct device *dev)
 
 static void mt6897_pd_detach_dev(struct generic_pm_domain *pd, struct device *dev)
 {
+	struct mt6897_mfg *mfg = pd_to_mfg(pd);
+
+	if (!mt6897_is_gpu(dev))
+		return;
 	dev_pm_opp_remove_all_dynamic(dev);
+	mutex_lock(&mfg->lock);
+	if (mfg->gpu_consumers)
+		mfg->gpu_consumers--;
+	mutex_unlock(&mfg->lock);
 }
 
 static unsigned long mt6897_clk_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
@@ -1512,8 +1533,9 @@ static const struct clk_ops mt6897_clk_ops = {
 
 static bool mt6897_genpd_in_use(struct mt6897_mfg *mfg)
 {
-	return mfg->pd.device_count > 0;
+	return mfg->gpu_consumers > 0;
 }
+
 
 static ssize_t a1_init_write(struct file *f, const char __user *ubuf, size_t len, loff_t *ppos)
 {
@@ -1740,7 +1762,7 @@ static int status_show(struct seq_file *s, void *unused)
 	mutex_lock(&mfg->lock);
 	seq_printf(s, "initialized=%d init_failed=%d ipi_broken=%d magic=%08x dbg_power_refs=%u genpd_devices=%u\n",
 		   mfg->initialized, mfg->init_failed, mfg->ipi_broken, mfg->ipi_magic,
-		   mfg->dbg_power_refs, mfg->pd.device_count);
+		   mfg->dbg_power_refs, mfg->gpu_consumers);
 	mt6897_read_pwr(mfg, &p);
 	seq_printf(s, "spm=%08x/%08x rpc=%08x/%08x mfg1_con=%08x pdca=%08x mfg0=%d mfg1=%d\n",
 		   p.spm, p.spm2, p.rpc, p.rpc2, p.mfg1_con, p.pdca, p.mfg0_on, p.mfg1_on);
