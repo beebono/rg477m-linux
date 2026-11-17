@@ -55,6 +55,19 @@
 			ftrace-size = <0x1000>;
 			pmsg-size = <0x80000>;
 		};
+
+		/*
+		 * MEM_ID_GPUFREQ: the first 0x4000 bytes of the bootloader's
+		 * me_GPUEB_SHARED (0x7fd70000 + 0x180000 on this board; the
+		 * tablet's 0x7fe70000 in mt6897.dtsi is not ours). The GPUEB
+		 * writes struct gpufreq_shared_status here after
+		 * CMD_INIT_SHARED_MEM. The early import already marks the whole
+		 * region no-map; this node only lets the driver find it.
+		 */
+		gpueb_gpufreq_mem: gpueb-gpufreq@7fd70000 {
+			reg = <0x0 0x7fd70000 0x0 0x4000>;
+			no-map;
+		};
 	};
 
 	/*
@@ -85,14 +98,17 @@
 	};
 };
 
-/* Nothing below is needed to reach an initramfs; enable one at a time later. */
-&gpu {
-	status = "disabled";
-};
+/*
+ * The SoC file's gpu and gpueb nodes belong to the vendor-derived GPUEB path
+ * of the tablet (CONFIG_MTK_GPUEB, wrong shared-memory address for this board,
+ * mfgcfg clocks). Drop them so nothing on this board can match that driver or
+ * the panthor hooks keyed on a "mediatek,gpueb" node; the GPU is described
+ * again below for the mainline mailbox + mt6897-gpufreq power domain.
+ */
+/delete-node/ &gpu;
+/delete-node/ &gpueb;
 
-&gpueb {
-	status = "disabled";
-};
+/* Nothing below is needed to reach an initramfs; enable one at a time later. */
 
 &keypad {
 	status = "disabled";
@@ -1665,5 +1681,61 @@
 		reset-gpios = <&pio 60 GPIO_ACTIVE_LOW>;
 		touchscreen-size-x = <1280>;
 		touchscreen-size-y = <960>;
+	};
+};
+
+/*
+ * GPU: Mali-G615 MC6 behind the GPUEB.
+ *
+ * The bootloader starts the GPUEB, which owns the GPU bucks (MT6368 VBUCK2,
+ * MT6363 VSRAM_MDFE), MFG MTCMOS, MFGPLL/MFGSCPLL and DVFS. The AP only talks
+ * to it over the mailbox; nothing here describes a regulator or a real clock.
+ *
+ * Stage A/B: gpueb_mbox and gpufreq probe passively; the IPI steps are run by
+ * hand from /sys/kernel/debug/mt6897_gpu/.
+ * Stage C: set the gpu node's status to "okay" (the one marked line below).
+ */
+&soc {
+	gpueb_mbox: mailbox@13c2fd80 {
+		compatible = "mediatek,mt6897-gpueb-mbox";
+		reg = <0x0 0x13c2fd80 0x0 0x280>,
+		      <0x0 0x13c62000 0x0 0x7c>;
+		reg-names = "data", "ctl";
+		interrupts = <GIC_SPI 588 IRQ_TYPE_LEVEL_HIGH 0>;
+		#mbox-cells = <1>;
+	};
+
+	gpufreq: power-controller@13c2fd1c {
+		compatible = "mediatek,mt6897-gpufreq";
+		reg = <0x0 0x13c2fd1c 0x0 0x64>,
+		      <0x0 0x13f91000 0x0 0x1000>,
+		      <0x0 0x1c001fc0 0x0 0x8>,
+		      <0x0 0x13c620a8 0x0 0x4>,
+		      <0x0 0x13000000 0x0 0x1000>;
+		reg-names = "gpr", "rpc", "spm-status", "pdca-sta", "gpu";
+		memory-region = <&gpueb_gpufreq_mem>;
+		mboxes = <&gpueb_mbox 0>, <&gpueb_mbox 1>, <&gpueb_mbox 2>,
+			 <&gpueb_mbox 3>, <&gpueb_mbox 4>, <&gpueb_mbox 5>,
+			 <&gpueb_mbox 6>, <&gpueb_mbox 7>, <&gpueb_mbox 8>,
+			 <&gpueb_mbox 9>, <&gpueb_mbox 10>;
+		mbox-names = "fast-dvfs-event", "gpufreq", "sleep", "timer",
+			     "fhctl", "ccf", "gpumpu", "fast-dvfs",
+			     "ipir-c-met", "ipis-c-met", "brisket";
+		#clock-cells = <0>;
+		#power-domain-cells = <0>;
+	};
+
+	gpu: gpu@13000000 {
+		compatible = "mediatek,mt6897-mali", "arm,mali-valhall-csf";
+		reg = <0x0 0x13000000 0x0 0x480000>;
+		interrupts = <GIC_SPI 586 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 585 IRQ_TYPE_LEVEL_HIGH 0>,
+			     <GIC_SPI 584 IRQ_TYPE_LEVEL_HIGH 0>;
+		interrupt-names = "job", "mmu", "gpu";
+		/* read-only view of the EB's frequency; gates nothing */
+		clocks = <&gpufreq>;
+		clock-names = "core";
+		power-domains = <&gpufreq>;
+		status = "okay";
 	};
 };
