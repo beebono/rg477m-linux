@@ -1122,7 +1122,6 @@ static int panthor_fw_start(struct panthor_device *ptdev)
 {
 	struct panthor_fw *fw = ptdev->fw;
 	bool timedout = false;
-	int ret;
 
 	ptdev->fw->booted = false;
 	panthor_job_irq_enable_events(&ptdev->fw->irq, ~0);
@@ -1133,7 +1132,8 @@ static int panthor_fw_start(struct panthor_device *ptdev)
 	    if ((of_machine_is_compatible("mediatek,mt6895") ||
 		 of_machine_is_compatible("mediatek,mt6897")) &&
 	    mt6895_gpueb_available()) {
-		ret = mt6895_gpueb_power_on();
+		int ret = mt6895_gpueb_power_on();
+
 		if (ret) {
 			drm_err(&ptdev->base,
 				"Failed to request GPUEB GPU power-on: %d\n", ret);
