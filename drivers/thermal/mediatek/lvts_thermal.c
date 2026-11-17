@@ -15,6 +15,8 @@
 #include <linux/nvmem-consumer.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm_domain.h>
+#include <linux/pm_runtime.h>
 #include <linux/reset.h>
 #include <linux/thermal.h>
 #include <linux/unaligned.h>
@@ -190,6 +192,13 @@ struct lvts_data {
 	 * measurement registers.
 	 */
 	bool hw_preinit;
+	/*
+	 * The controller sits inside a power domain this driver does not own
+	 * (MT6897: the GPU's, MFG1). The node is a consumer of that domain but
+	 * never keeps it on; registers are only accessed while genpd reports
+	 * the domain on, and reads while it is off return -EAGAIN.
+	 */
+	bool power_gated;
 	/* Reciprocal formula, see struct lvts_recip_coeff */
 	const struct lvts_recip_coeff *coeff_nt;
 	const struct lvts_recip_coeff *coeff_ht;
@@ -216,9 +225,18 @@ struct lvts_sensor {
 	int temp_offset;
 };
 
+/* Controller registers kept for power_gated controllers (see lvts_pg_check) */
+#define LVTS_PG_SNAP_NUM	23
+
+struct lvts_domain;
+
 struct lvts_ctrl {
 	struct lvts_sensor sensors[LVTS_SENSOR_MAX];
 	const struct lvts_data *lvts_data;
+	struct lvts_domain *lvts_td;
+	u32 snap[LVTS_PG_SNAP_NUM];
+	bool snap_valid;
+	bool was_configured;
 	u32 calibration[LVTS_SENSOR_MAX];
 	u8 valid_sensor_mask;
 	int mode;
@@ -236,10 +254,21 @@ struct lvts_domain {
 	void __iomem *base;
 	size_t calib_len;
 	u8 *calib;
+	/* power_gated only: hw_on is true while genpd has the domain on */
+	struct mutex hw_lock;
+	bool hw_on;
+	unsigned int hw_on_count;
+	struct notifier_block pd_nb;
+	struct device *pd_nb_dev;
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *dom_dentry;
 #endif
 };
+
+static bool gpu_restore;
+module_param(gpu_restore, bool, 0644);
+MODULE_PARM_DESC(gpu_restore,
+		 "Power-gated (GPU) LVTS: after a power-on that lost the controller setup, rewrite the controller registers from the last configured snapshot (experimental)");
 
 #ifdef CONFIG_MTK_LVTS_THERMAL_DEBUGFS
 
@@ -319,6 +348,10 @@ static int lvts_debugfs_init(struct device *dev, struct lvts_domain *lvts_td)
 		sprintf(name, "controller%d", i);
 		dentry = debugfs_create_dir(name, lvts_td->dom_dentry);
 		if (IS_ERR(dentry))
+			continue;
+
+		/* the plain regset would read with the power domain off */
+		if (lvts_td->lvts_data->power_gated)
 			continue;
 
 		regset = devm_kzalloc(dev, sizeof(*regset), GFP_KERNEL);
@@ -409,7 +442,19 @@ static int lvts_get_temp(struct thermal_zone_device *tz, int *temp)
 		 * register, bits 15-0 are the raw value and 0 means "no
 		 * measurement yet". The vendor code does not use bit 16.
 		 */
-		value = readl(msr) & 0xFFFF;
+		if (lvts_data->power_gated) {
+			struct lvts_domain *lvts_td = lvts_ctrl->lvts_td;
+
+			mutex_lock(&lvts_td->hw_lock);
+			if (!lvts_td->hw_on) {
+				mutex_unlock(&lvts_td->hw_lock);
+				return -EAGAIN;	/* domain off: no reading */
+			}
+			value = readl(msr) & 0xFFFF;
+			mutex_unlock(&lvts_td->hw_lock);
+		} else {
+			value = readl(msr) & 0xFFFF;
+		}
 		if (!value)
 			return -EAGAIN;
 
@@ -1152,6 +1197,7 @@ static int lvts_ctrl_init(struct device *dev, struct lvts_domain *lvts_td,
 
 		lvts_ctrl[i].base = lvts_td->base + lvts_data->lvts_ctrl[i].offset;
 		lvts_ctrl[i].lvts_data = lvts_data;
+		lvts_ctrl[i].lvts_td = lvts_td;
 
 		ret = lvts_sensor_init(dev, &lvts_ctrl[i],
 				       &lvts_data->lvts_ctrl[i]);
@@ -1600,6 +1646,141 @@ static void lvts_preinit_report(struct device *dev, struct lvts_ctrl *lvts_ctrl,
 			 sel, (protctl & 0xFFFF) ? " (masked by PROTCTL offset)" : "");
 }
 
+/*
+ * Power-gated controllers. The vendor kernel neither programs nor
+ * power-manages the MT6897 GPU controller, so whether it keeps its setup
+ * across a GPU power cycle is not known: after every power-on this checks
+ * (read-only) whether the controller still runs, keeps a snapshot of a
+ * running controller, and only rewrites it from that snapshot when the
+ * gpu_restore parameter asks for it.
+ */
+static const u16 lvts_pg_snap_regs[LVTS_PG_SNAP_NUM] = {
+	/* restored in this order: setup, thresholds, calibration, protection */
+	0x004, 0x008, 0x00C, 0x024, 0x028, 0x02C, 0x030, 0x034,	/* MONCTL1/2, MONINT, thresholds, offsets */
+	0x038, 0x03C, 0x040, 0x044, 0x048,			/* MSRCTL0/1, TSSEL, DEVICETO, CALSCALE */
+	0x054, 0x058, 0x05C, 0x060,				/* EDATA00-03 */
+	0x0C0, 0x0C4, 0x0C8, 0x0CC,				/* PROTCTL, PROTTA-C */
+	0x0E4,							/* CLKEN */
+	0x000,							/* MONCTL0: monitoring on, last */
+};
+
+static bool lvts_pg_running(struct lvts_ctrl *lvts_ctrl, u32 *clken, u32 *monctl0)
+{
+	*clken = readl(LVTS_CLKEN(lvts_ctrl->base));
+	*monctl0 = readl(LVTS_MONCTL0(lvts_ctrl->base));
+
+	return (*clken & BIT(0)) &&
+	       (*monctl0 & lvts_ctrl->valid_sensor_mask) == lvts_ctrl->valid_sensor_mask;
+}
+
+/* Called with hw_lock held and the domain on. */
+static void lvts_pg_check(struct device *dev, struct lvts_domain *lvts_td, const char *when)
+{
+	bool chatty = lvts_td->hw_on_count <= 8;
+	int i, j;
+
+	for (i = 0; i < lvts_td->num_lvts_ctrl; i++) {
+		struct lvts_ctrl *lvts_ctrl = &lvts_td->lvts_ctrl[i];
+		u32 clken, monctl0;
+		bool running = lvts_pg_running(lvts_ctrl, &clken, &monctl0);
+
+		if (chatty || running != lvts_ctrl->was_configured)
+			dev_info(dev, "%s #%u: controller %d %s (CLKEN=%#x MONCTL0=%#x MSR0=%#x MSR1=%#x)\n",
+				 when, lvts_td->hw_on_count, i,
+				 running ? "running" : "NOT configured",
+				 clken, monctl0, readl(LVTS_MSR0(lvts_ctrl->base)),
+				 readl(LVTS_MSR0(lvts_ctrl->base) + 4));
+		lvts_ctrl->was_configured = running;
+
+		if (running) {
+			if (!lvts_ctrl->snap_valid) {
+				for (j = 0; j < LVTS_PG_SNAP_NUM; j++)
+					lvts_ctrl->snap[j] = readl(lvts_ctrl->base + lvts_pg_snap_regs[j]);
+				lvts_ctrl->snap_valid = true;
+				dev_info(dev, "controller %d: setup snapshot taken\n", i);
+			}
+			continue;
+		}
+
+		if (!gpu_restore || !lvts_ctrl->snap_valid)
+			continue;
+
+		dev_info(dev, "controller %d: restoring setup from snapshot (gpu_restore=1)\n", i);
+		for (j = 0; j < LVTS_PG_SNAP_NUM; j++)
+			writel(lvts_ctrl->snap[j], lvts_ctrl->base + lvts_pg_snap_regs[j]);
+		lvts_ctrl->was_configured = lvts_pg_running(lvts_ctrl, &clken, &monctl0);
+		dev_info(dev, "controller %d: after restore %s (CLKEN=%#x MONCTL0=%#x)\n", i,
+			 lvts_ctrl->was_configured ? "running" : "still not running", clken, monctl0);
+	}
+}
+
+static int lvts_pd_notify(struct notifier_block *nb, unsigned long action, void *data)
+{
+	struct lvts_domain *lvts_td = container_of(nb, struct lvts_domain, pd_nb);
+
+	switch (action) {
+	case GENPD_NOTIFY_PRE_OFF:
+		/* waits for a read in flight; none can start afterwards */
+		mutex_lock(&lvts_td->hw_lock);
+		lvts_td->hw_on = false;
+		mutex_unlock(&lvts_td->hw_lock);
+		break;
+	case GENPD_NOTIFY_ON:
+		mutex_lock(&lvts_td->hw_lock);
+		lvts_td->hw_on = true;
+		lvts_td->hw_on_count++;
+		if (lvts_td->num_lvts_ctrl)
+			lvts_pg_check(lvts_td->pd_nb_dev, lvts_td, "power-on");
+		mutex_unlock(&lvts_td->hw_lock);
+		break;
+	default:
+		break;
+	}
+	return NOTIFY_OK;
+}
+
+static void lvts_pd_notifier_remove(void *data)
+{
+	dev_pm_genpd_remove_notifier(data);
+}
+
+/*
+ * Take a runtime PM reference so the domain is on (and stays on) while the
+ * controllers are inspected and the zones are registered; the caller drops
+ * it again, after which the domain follows its other consumers.
+ */
+static int lvts_pg_probe_begin(struct device *dev, struct lvts_domain *lvts_td)
+{
+	int ret;
+
+	if (!dev->pm_domain)
+		return dev_err_probe(dev, -EINVAL,
+				     "power-gated LVTS needs its power-domains property\n");
+
+	mutex_init(&lvts_td->hw_lock);
+	lvts_td->pd_nb_dev = dev;
+	lvts_td->pd_nb.notifier_call = lvts_pd_notify;
+	ret = dev_pm_genpd_add_notifier(dev, &lvts_td->pd_nb);
+	if (ret)
+		return dev_err_probe(dev, ret, "cannot watch the power domain\n");
+	ret = devm_add_action_or_reset(dev, lvts_pd_notifier_remove, dev);
+	if (ret)
+		return ret;
+
+	ret = devm_pm_runtime_enable(dev);
+	if (ret)
+		return ret;
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret)
+		return dev_err_probe(dev, ret, "cannot power the domain for probe\n");
+
+	/* no ON notification if the domain was already on */
+	mutex_lock(&lvts_td->hw_lock);
+	lvts_td->hw_on = true;
+	mutex_unlock(&lvts_td->hw_lock);
+	return 0;
+}
+
 static int lvts_domain_init(struct device *dev, struct lvts_domain *lvts_td,
 					const struct lvts_data *lvts_data)
 {
@@ -1733,7 +1914,23 @@ static int lvts_probe(struct platform_device *pdev)
 		 * signals the hardware reboot stage, whose RGU path does not
 		 * depend on software, and the zones are polled.
 		 */
+		if (lvts_data->power_gated) {
+			ret = lvts_pg_probe_begin(dev, lvts_td);
+			if (ret)
+				return ret;
+		}
+
 		ret = lvts_domain_init(dev, lvts_td, lvts_data);
+
+		if (lvts_data->power_gated) {
+			if (!ret) {
+				mutex_lock(&lvts_td->hw_lock);
+				lvts_pg_check(dev, lvts_td, "probe");
+				mutex_unlock(&lvts_td->hw_lock);
+			}
+			/* from here on the domain follows its other consumers */
+			pm_runtime_put(dev);
+		}
 		if (ret)
 			return dev_err_probe(dev, ret, "Failed to initialize the lvts domain\n");
 
@@ -2633,11 +2830,12 @@ static const struct lvts_data mt8196_lvts_ap_data = {
 	.ops = &lvts_platform_ops_mt8196,
 };
 
-#define MT6897_LVTS_DATA(_ctrl)						\
+#define MT6897_LVTS_DATA(_ctrl, _gated)					\
 	{								\
 		.lvts_ctrl	= _ctrl,				\
 		.num_lvts_ctrl	= ARRAY_SIZE(_ctrl),			\
 		.hw_preinit	= true,					\
+		.power_gated	= _gated,				\
 		.coeff_nt	= &mt6897_coeff_nt,			\
 		.coeff_ht	= &mt6897_coeff_ht,			\
 		.gt_calib_bit_offset = 0,				\
@@ -2650,13 +2848,14 @@ static const struct lvts_data mt8196_lvts_ap_data = {
 	}
 
 static const struct lvts_data mt6897_lvts_mcu_data =
-	MT6897_LVTS_DATA(mt6897_lvts_mcu_data_ctrl);
+	MT6897_LVTS_DATA(mt6897_lvts_mcu_data_ctrl, false);
 static const struct lvts_data mt6897_lvts_ap_data =
-	MT6897_LVTS_DATA(mt6897_lvts_ap_data_ctrl);
+	MT6897_LVTS_DATA(mt6897_lvts_ap_data_ctrl, false);
 static const struct lvts_data mt6897_lvts_apu_data =
-	MT6897_LVTS_DATA(mt6897_lvts_apu_data_ctrl);
+	MT6897_LVTS_DATA(mt6897_lvts_apu_data_ctrl, true);
+/* GPU controller at 0x13ff0000, inside the GPU power domain (MFG1) */
 static const struct lvts_data mt6897_lvts_gpu_data =
-	MT6897_LVTS_DATA(mt6897_lvts_gpu_data_ctrl);
+	MT6897_LVTS_DATA(mt6897_lvts_gpu_data_ctrl, true);
 
 static const struct of_device_id lvts_of_match[] = {
 	{ .compatible = "mediatek,mt6897-lvts-mcu", .data = &mt6897_lvts_mcu_data },
